@@ -409,7 +409,7 @@ class LRFinder(object):
             loss = self.criterion(outputs, labels)
 
             # Loss should be averaged in each step
-            loss /= accumulation_steps
+            loss = loss / accumulation_steps
 
             # Backward pass
             if IS_AMP_AVAILABLE and hasattr(self.optimizer, "_amp_stash"):
@@ -427,7 +427,7 @@ class LRFinder(object):
             if total_loss is None:
                 total_loss = loss
             else:
-                total_loss += loss
+                total_loss = loss + total_loss
 
         self.optimizer.step()
 

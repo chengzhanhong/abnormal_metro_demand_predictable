@@ -23,12 +23,12 @@ class MetroTransformer(nn.Module):
          [bs x target_len] for prediction
          [bs x num_patch x patch_len] for pretrain
     """
-    def __init__(self, target_len:int, patch_len:int, num_patch:int, num_embeds:tuple=(2,159,7,217),
+    def __init__(self, patch_len:int, num_patch:int, num_target_patch, num_embeds:tuple=(2,159,7,217),
                  n_layers:int=3, d_model=128, n_heads=16, d_ff:int=256,
-                 norm:str='BatchNorm', attn_dropout:float=0., dropout:float=0., act:str="gelu", 
+                 norm:str='LayerNorm', attn_dropout:float=0., dropout:float=0., act:str="gelu",
                  pre_norm:bool=False, store_attn:bool=False,
                  pe:str='zeros', learn_pe:bool=True, head_dropout = 0, 
-                 head_type = "prediction", output_dim=1, revin=False, ABflow=True, **kwargs):
+                 attn_mask=None, x_loc=None, x_scale=None, **kwargs):
         """
         Parameters:
             num_embeds: tuple of number of embeddings for flow_type, station, weekday, or time_in_day
@@ -38,55 +38,72 @@ class MetroTransformer(nn.Module):
             revin: whether to use reversible instance normalization
             ABflow: whether to use AB flow model
         """
-
         super().__init__()
-        if ABflow:
-            num_patch = num_patch*2
+
+        num_patch = num_patch*2
         self.num_patch = num_patch
-        assert head_type in ['pretrain', 'prediction'], 'head type should be either pretrain or prediction'
+        self.patch_len = patch_len
+        self.num_target_patch = num_target_patch
+        self.attn_mask = attn_mask
+        self.x_loc = x_loc
+        self.x_scale = x_scale
+
         # Backbone
-        self.backbone = MetroEncoder(num_patch=num_patch, patch_len=patch_len,num_embeds=num_embeds,
-                                n_layers=n_layers, d_model=d_model, n_heads=n_heads, d_ff=d_ff,
-                                attn_dropout=attn_dropout, dropout=dropout, act=act, 
-                                pre_norm=pre_norm, store_attn=store_attn, norm=norm,
-                                pe=pe, learn_pe=learn_pe)
+        self.backbone = MetroEncoder(num_patch=num_patch, patch_len=patch_len, num_target_patch=num_target_patch,
+                                     num_embeds=num_embeds, n_layers=n_layers, d_model=d_model,
+                                     n_heads=n_heads, d_ff=d_ff, attn_dropout=attn_dropout,
+                                     dropout=dropout, act=act, pre_norm=pre_norm, store_attn=store_attn,
+                                     norm=norm, pe=pe, learn_pe=learn_pe)
 
         # Head
-        self.head_type = head_type
+        self.head = ForecastHead(d_model, patch_len, head_dropout)
 
-        if head_type == "pretrain":
-            self.head = PretrainHead(d_model, patch_len, head_dropout)
-        elif head_type == "prediction":
-            self.head = PredictionHead(d_model, num_patch, target_len, head_dropout=head_dropout, out_dim=output_dim)
-
-        # Reversible Instance Normalization
-        self.revin = revin
-        if revin:
-            self.revin_layer = RevIN(1)
-
+        # Standardization
+        self.standardization = Standardization(self.x_loc, self.x_scale)
+        self.softplus = nn.Softplus()
 
     def forward(self, x):
         """
         x: tuple of flow tensor [bs x num_patch x patch_len] and feature tensors of [bs x num_patch x 1].
         """
         z = x[0]
-        features = x[1:]
-        if self.revin:
-            z = self.revin_layer(z,'norm')
+        features = x[1:-1]
+        fcst_loc = x[-1]
+        stations = features[1][:, 0].long()
+        z = self.standardization(z, stations, 'norm')
+        # todo: test post_zero
+        # if self.post_zero:
+        #     z[fcst_loc==1] = 0
 
-        z = self.backbone(z, features)                                 # z: [bs x d_model x num_patch]
-        z = self.head(z)
+        z = self.backbone(z, features, self.attn_mask)        # z: [bs x (num_patch+num_target_patch) x d_model]
+        z = self.head(z, fcst_loc)                            # z: [bs x num_fcst x patch_len]
 
-        if self.revin:
-            z = self.revin_layer(z, 'denorm')
+        z = self.standardization(z, stations, 'denorm')       # z: [bs x num_fcst x patch_len]
+        z = self.softplus(z)
+        return z
 
-        # z: [bs x target_len] for prediction
-        #    [bs x num_patch x patch_len] for pretrain
-        return z.squeeze()
+
+class Standardization(nn.Module):
+    def __init__(self, loc, scale):
+        super(Standardization, self).__init__()
+        self.loc = loc.reshape([-1, 1, 1])
+        self.scale = scale.reshape([-1, 1, 1])
+
+    def forward(self, x, i, mode:str):
+        """
+        x: (bs, num_patch, patch_len)
+        i: index of the patch, (bs,)
+        """
+        if mode == 'norm':
+            x = (x - self.loc[i]) / self.scale[i]
+        elif mode == 'denorm':
+            x = x * self.scale[i] + self.loc[i]
+        else: raise NotImplementedError
+        return x
 
 
 class MetroEncoder(nn.Module):
-    def __init__(self, num_patch, patch_len, num_embeds, n_layers=3, d_model=128, n_heads=16,
+    def __init__(self, num_patch, num_target_patch, patch_len, num_embeds, n_layers=3, d_model=128, n_heads=16,
                  d_ff=256, norm='BatchNorm', attn_dropout=0., dropout=0., act="gelu", store_attn=False,
                  pre_norm=False, pe='zeros', learn_pe=True):
 
@@ -99,7 +116,7 @@ class MetroEncoder(nn.Module):
         self.W_P = nn.Linear(patch_len, d_model)
 
         # Positional encoding
-        self.W_pos = positional_encoding(pe, learn_pe, num_patch, d_model)
+        self.W_pos = positional_encoding(pe, learn_pe, num_patch+num_target_patch, d_model)
 
         # Flow_type, station, weekday, or time_in_day encoding
         self.feature_eb = nn.ModuleList([nn.Embedding(num_embeds[i], d_model) for i in range(len(num_embeds))])
@@ -111,20 +128,21 @@ class MetroEncoder(nn.Module):
         self.encoder = TSTEncoder(d_model, n_heads, d_ff=d_ff, norm=norm, attn_dropout=attn_dropout, dropout=dropout,
                                    pre_norm=pre_norm, activation=act, n_layers=n_layers, store_attn=store_attn)
 
-    def forward(self, z, features) -> Tensor:
+    def forward(self, z, features, attn_mask=None) -> Tensor:
         """
         z: tensor [bs x num_patch x patch_len]
         features: tuple of tensor [bs x num_patch], representing flow_type, station, weekday, or time_in_day
         """
         z = self.W_P(z)                                                          # z: [bs x num_patch x d_model]
-        z = self.dropout(z + self.W_pos)
+        z = z + self.W_pos
 
         # feature encoding
         for i, feature_eb in enumerate(self.feature_eb):
             z += feature_eb(features[i])                            # z: [bs x num_patch x d_model]
 
+        z = self.dropout(z)
         # Encoder
-        z = self.encoder(z)                                                      # z: [bs x num_patch x d_model]
+        z = self.encoder(z, attn_mask)                                                      # z: [bs x num_patch x d_model]
         return z
     
     
@@ -140,14 +158,14 @@ class TSTEncoder(nn.Module):
                                                       activation=activation,
                                                       pre_norm=pre_norm, store_attn=store_attn) for i in range(n_layers)])
 
-    def forward(self, src:Tensor):
+    def forward(self, src:Tensor, attn_mask=None):
         """
         src: tensor [bs x q_len x d_model]
         """
         output = src
-        for mod in self.layers: output = mod(output)
+        for mod in self.layers:
+            output = mod(output, attn_mask)
         return output
-
 
 
 class TSTEncoderLayer(nn.Module):
@@ -191,7 +209,7 @@ class TSTEncoderLayer(nn.Module):
         self.store_attn = store_attn
 
 
-    def forward(self, src:Tensor):
+    def forward(self, src:Tensor, attn_mask=None):
         """
         src: tensor [bs x q_len x d_model]
         """
@@ -199,7 +217,7 @@ class TSTEncoderLayer(nn.Module):
         if self.pre_norm:
             src = self.norm_attn(src)
         ## Multi-Head attention
-        src2, attn = self.self_attn(src, src, src)
+        src2, attn = self.self_attn(src, src, src, attn_mask=attn_mask)
         if self.store_attn:
             self.attn = attn
         ## Add & Norm
@@ -220,42 +238,17 @@ class TSTEncoderLayer(nn.Module):
         return src
 
 
-class PredictionHead(nn.Module):
-    def __init__(self, d_model, num_patch, forecast_len, out_dim=1, head_dropout=0):
-        super().__init__()
-        head_dim = num_patch*d_model
-        self.forecast_len = forecast_len
-        self.flatten = nn.Flatten(start_dim=-2)
-        self.linear_list = nn.ModuleList([nn.Linear(head_dim, forecast_len) for i in range(out_dim)])
-        self.dropout = nn.Dropout(head_dropout)
-
-    def forward(self, x):
-        """
-        x: [bs x num_patch x d_model]
-        output: [bs x forecast_len x out_dim]
-        """
-        y = torch.empty(x.shape[0], self.forecast_len, len(self.linear_list), device=x.device)  # [bs x forecast_len x out_dim]
-        x = self.flatten(x)     # x: [bs x (num_patch * d_model)]
-        x = self.dropout(x)
-        for i, linear in enumerate(self.linear_list):
-            y[:, :, i] = linear(x)
-        return y
-
-
-class PretrainHead(nn.Module):
+class ForecastHead(nn.Module):
     def __init__(self, d_model, patch_len, dropout):
         super().__init__()
         self.dropout = nn.Dropout(dropout)
         self.linear = nn.Linear(d_model, patch_len)
 
-    def forward(self, x):
+    def forward(self, x, fcst_loc):
         """
         x: tensor [bs x num_patch x d_model]
-        output: tensor [bs x num_patch x patch_len]
+        output: tensor [bs x num_fcst x patch_len]
         """
-        x = self.linear( self.dropout(x) )      # [bs x num_patch x patch_len]
+        x = torch.gather(x, dim=1, index=fcst_loc.unsqueeze(-1).expand(-1, -1, x.size(-1)))  # [bs x num_fcst x d_model]
+        x = self.linear( self.dropout(x) )      # [bs x num_fcst x patch_len]
         return x
-
-
-class MQRnnHead(nn.Module):
-    pass
