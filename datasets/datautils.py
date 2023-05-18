@@ -11,7 +11,9 @@ data_infos = {'guangzhou': {'inflow_file': 'inflow7_9.csv',
                             'start_minute': 360,
                             'end_minute': 1440,
                             'subsample_start': '2017-07-01',
-                            'subsample_end': '2017-07-20'}
+                            'subsample_end': '2017-07-20',
+                            'prominence': 300  # used to determine abnormal peaks
+                            }
               }
 
 
@@ -48,6 +50,47 @@ def drop_midnight(data, start_minute, end_minute):
     return data
 
 
+def get_abnormal_index(data, s=14, prominence=300, patch_len=3, neighbor=1, fig=True):
+    """Detect abnormal inflow data using scipy.signal.find_peaks.
+    This function is used to detect abnormal inflow peaks, and return the index of the abnormal peaks.
+    neighbor: int, the number of neighbors around an abnormal point that also be marked as abnormal.
+    """
+    # Find peaks
+    from scipy.signal import find_peaks
+    data0 = data.loc[(data['station'] == s)].copy()
+    data0['patch_id'] = np.arange(len(data0)) // patch_len
+    data1 = data0.groupby('patch_id').agg({'station': 'first', 'time': 'first', 'inflow': 'sum'}).reset_index()
+    data1.sort_values(by='time', inplace=True)
+    peaks, _ = find_peaks(data1['inflow'].values, prominence=prominence)
+
+    # Mark outliers
+    data1['minute_in_day'] = data1['time'].dt.hour * 60 + data1['time'].dt.minute
+    data1['75quantile'] = data1.groupby(['minute_in_day'])[['inflow']].transform('quantile', q=0.75)
+    data1['25quantile'] = data1.groupby(['minute_in_day'])[['inflow']].transform('quantile', q=0.25)
+    data1['iqr'] = data1['75quantile'] - data1['25quantile']
+    data1['upper'] = data1['75quantile'] + 1.5 * data1['iqr']
+    abnormal = np.where(data1['inflow'] > data1['upper'])[0]
+
+    # Mark the abnormal peaks
+    abnormal_peaks = np.intersect1d(peaks, abnormal)
+    # Mark the neighbors of the abnormal peaks
+    idx = np.unique(np.concatenate([abnormal_peaks + i for i in range(-neighbor, neighbor + 1)]).ravel())
+    idx = idx[(idx >= 0) & (idx < len(data1))]
+
+    index = data.loc[(data['station'] == s) & (data['time'].isin(data1.iloc[idx]['time'])), 'inflow'].index
+    # Extend the abnormal index to the whole patch
+    index = np.unique(np.concatenate([index + i for i in range(patch_len)]).ravel())
+    index = index[(index >= data.index.min()) & (index <= data.index.max())]
+
+    if fig:
+        fig, ax = plt.subplots(figsize=(30, 5))
+        ax.plot(data0['time'], data0['inflow'])
+        ax.plot(data0.loc[index,'time'], data0.loc[index, 'inflow'], 'ro')
+        fig.tight_layout()
+
+    return index
+
+#%%
 def detect_anomaly(data, args):
     """Detect anomalies when the difference of daily inflow and outflow larger than args.flow_diff_r,
     or when the total daily flow is zero, mark them as NaN."""
@@ -132,20 +175,6 @@ def split_train_val_test(data, args):
     return train_data, val_data, test_data
 
 
-def get_data_loader(args):
-    # add data info to args
-    data_info = data_infos[args.dset]
-    for key, value in data_info.items():
-        setattr(args, key, value)
-
-    dataset = MetroDataset(args)
-    data_loader = DataLoader(dataset=dataset,
-                             batch_size=args.batch_size,
-                             shuffle=True,
-                             num_workers=args.num_workers)
-    return data_loader
-
-
 class MetroDataset(Dataset):
     def __init__(self, data, mask_method, args):
         self.data = data.sort_values(['station', 'time']).reset_index(drop=True)
@@ -156,7 +185,13 @@ class MetroDataset(Dataset):
         self.target_len = args.target_len
         self.num_target_patch = self.target_len // self.patch_len
         self.sample_len = self.context_len + self.target_len
-        self.f_index, self.if_index = self.get_feasible_index()
+
+        self.f_index, self.if_index = self.get_feasible_index()  # f_index is the union of normal and abnormal index
+        self.normal_index = self.f_index
+        self.abnormal_index = np.array([])
+        self._index = self.f_index                              # Default f_index is the self._index
+        self.abnormal_station = None
+
         self.flow_type = torch.concat((torch.zeros(self.num_patch, dtype=args.torch_int),
                                        torch.ones(self.num_patch, dtype=args.torch_int),
                                        torch.ones(self.num_target_patch, dtype=args.torch_int)*2))
@@ -175,7 +210,31 @@ class MetroDataset(Dataset):
             warnings.warn(f'num_time_in_day {self.num_time_in_day}, please check the stride, patch_len are correct.')
 
     def __len__(self):
-        return len(self.f_index)
+        return len(self._index)
+
+    def exclude_abnormal_flow(self, station=None, prominence=300):
+        if station is not None:
+            abnormal_index = get_abnormal_index(self.data, station, prominence=prominence, patch_len=self.patch_len)
+            idx_set = set()
+            for idx in abnormal_index:
+                idx_set.update(range(idx - self.sample_len + 1, idx + 1))
+            self.abnormal_index = np.array(list(idx_set))
+            self.abnormal_index = np.setdiff1d(self.abnormal_index, self.if_index)
+            self.normal_index = np.setdiff1d(self.f_index, self.abnormal_index)
+            self.abnormal_station = station
+        self._index = self.normal_index
+
+    def only_abnormal_flow(self, station=None, prominence=300):
+        if station is not None:
+            abnormal_index = get_abnormal_index(self.data, station, prominence=prominence, patch_len=self.patch_len)
+            idx_set = set()
+            for idx in abnormal_index:
+                idx_set.update(range(idx - self.sample_len + 1, idx + 1))
+            self.abnormal_index = np.array(list(idx_set))
+            self.abnormal_index = np.setdiff1d(self.abnormal_index, self.if_index)
+            self.normal_index = np.setdiff1d(self.f_index, self.abnormal_index)
+            self.abnormal_station = station
+        self._index = self.abnormal_index
 
     def get_feasible_index(self):
         """Get feasible index with nan and station switch points excluded.
@@ -187,7 +246,6 @@ class MetroDataset(Dataset):
 
         nan_idx = np.where(np.isnan(self.data.inflow.values))[0]
         new_station_idx = np.where(self.data.station.values != self.data.station.shift(1).values)[0]
-
 
         infeasible_idx = set()
         for idx in nan_idx:
@@ -209,7 +267,7 @@ class MetroDataset(Dataset):
          time_in_day: num_patch*2
          target: target_len
          """
-        data_piece = self.data.iloc[self.f_index[index]:self.f_index[index] + self.sample_len, :]
+        data_piece = self.data.iloc[self._index[index]:self._index[index] + self.sample_len, :]
         outflow_data = torch.from_numpy(data_piece.outflow.values[:self.context_len]).unfold(0, self.patch_len, self.stride)
         inflow_data = torch.from_numpy(data_piece.inflow.values).unfold(0, self.patch_len, self.stride)
         inflow_data, target, fcst_loc = self.random_mask(inflow_data, method=self.mask_method, mask_ratio=self.mask_ratio)
@@ -228,7 +286,7 @@ class MetroDataset(Dataset):
 
     def random_mask(self, data, method='target', mask_ratio=0.2):
         """Randomly mask the data with mask_ratio.
-        method: 'target' or 'context'
+        method: 'target' or 'both'
         mask_ratio: float, the ratio of masked data in the context, does not work for 'target' method.
         data: the data to be masked (inflow only), shape: (num_patch+num_target_patch, patch_len)
         return
@@ -246,7 +304,7 @@ class MetroDataset(Dataset):
             fcst_loc = torch.concat([torch.randperm(self.num_patch)[:int((self.num_patch) * mask_ratio)],
                                      torch.arange(self.num_patch, n)])
         else:
-            raise ValueError('method must be "target" or "context" or "both".')
+            raise ValueError('method must be "target" or "both".')
 
         target = data[fcst_loc, :]
         masked_data[fcst_loc, :] = 0
@@ -257,14 +315,14 @@ class MetroDataset(Dataset):
         # Test whether the time and station is feasible and valid.
         index_now = self.data[(self.data.time == time) & (self.data.station == station)].index.values[0]
         index_start = index_now - self.context_len
-        if index_start not in self.f_index:
+        if index_start not in self._index:
             print('Invalid or infeasible time and station.')
             return None
 
         data_piece = self.data.iloc[index_start:index_now + self.target_len, :]
 
-        # Get the location of index in f_index.
-        index_ = np.where(self.f_index == index_start)[0][0]
+        # Get the location of index in self._index.
+        index = np.where(self._index == index_start)[0][0]
 
         old_method=self.mask_method
         old_mask_ratio=self.mask_ratio
@@ -272,7 +330,7 @@ class MetroDataset(Dataset):
         self.mask_method = method
         self.mask_ratio = mask_ratio
 
-        x, y = self.__getitem__(index_)
+        x, y = self.__getitem__(index)
 
         self.mask_method = old_method
         self.mask_ratio = old_mask_ratio
