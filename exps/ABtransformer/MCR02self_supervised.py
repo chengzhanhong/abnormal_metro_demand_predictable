@@ -24,14 +24,8 @@ parser.add_argument('--seed', type=int, default=1, help='random seed')
 parser.add_argument('--max_run_time', type=int, default=10, help='maximum running time in hours')
 
 # Dataset and dataloader
-parser.add_argument('--dset', type=str, default='guangzhou', help='dataset name')
+parser.add_argument('--dset', type=str, default='guangzhou', help='dataset name, guangzhou or nyc or seoul')
 parser.add_argument('--subsample', type=bool, default=False, help='Whether to subsample the dataset for quick test')
-parser.add_argument('--t_resolution', type=str, default='10T', help='the time resolution for resampling')
-parser.add_argument('--patch_len', type=int, default=6, help='patch length')
-parser.add_argument('--stride', type=int, default=6, help='stride between patch')
-parser.add_argument('--num_patch', type=int, default=18, help='number of patches for boarding/alighting flow')
-parser.add_argument('--target_len', type=int, default=36, help='forecast horizon for supervised learning, '
-                                                               'should be a multiple of stride/patch_len')
 parser.add_argument('--data_mask_method', type=str, default='target', help='one of (target, both)')
 parser.add_argument('--data_mask_ratio', type=float, default=0.2, help='the ratio of masked data in context')
 parser.add_argument('--train_r', type=float, default=0.8, help='the ratio of training data')
@@ -82,7 +76,6 @@ elif args.default_float == 'float64':
     torch.set_default_dtype(torch.float64)
 else:
     raise ValueError('default float type not supported')
-args.num_target_patch = args.target_len // args.patch_len
 
 if args.default_int == 'int32':
     args.torch_int = torch.int32
@@ -99,15 +92,12 @@ else:
     print('No GPU available, using the CPU instead.')
 
 #%% Prepare data
-args.data_path = '../../../data/GuangzhouMetro//'
+args.dset = 'seoul'
 args.subsample = True
 args.n_epochs = 20
 args.d_model = 128
 args.n_heads = 8
 args.n_layers = 3
-args.patch_len = 3
-args.stride = 3
-args.num_patch = 36
 args.loss = 'rmse'
 args.max_lr = 0.001
 args.standardization = 'zscore'

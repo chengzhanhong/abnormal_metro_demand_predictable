@@ -6,14 +6,37 @@ import pandas as pd
 from torch.utils.data import DataLoader, Dataset, Sampler
 import warnings
 
-data_infos = {'guangzhou': {'inflow_file': 'inflow7_9.csv',
+
+data_infos = {'guangzhou': {'data_path': '../../../data/GuangzhouMetro//',
+                            'inflow_file': 'inflow7_9.csv',
                             'outflow_file': 'outflow7_9.csv',
                             'start_minute': 360,
                             'end_minute': 1440,
                             'subsample_start': '2017-07-01',
                             'subsample_end': '2017-07-20',
-                            'prominence': 300  # used to determine abnormal peaks
-                            }
+                            'prominence': 300,  # used to determine abnormal peaks
+                            't_resolution': '10T',  # time resolution used in the model
+                            'patch_len': 3,
+                            'stride': 3,
+                            'num_patch': 36,
+                            'target_len': 36,  # 6 hours
+                            'flow_diff_r': 0.4, # the maximum possible ratio of in-out flow difference of a day, used to remove outliers
+                            },
+              'seoul': {'data_path': '../../data/SeoulMetro/',
+                        'inflow_file': 'in_data.csv',
+                        'outflow_file': 'out_data.csv',
+                        'start_minute': 300,
+                        'end_minute': 1441,
+                        'subsample_start': '2023-01-01',
+                        'subsample_end': '2023-01-30',
+                        'prominence': 300,  # used to determine abnormal peaks
+                        't_resolution': '60T',  # time resolution used in the model
+                        'patch_len': 1,
+                        'stride': 1,
+                        'num_patch': 20,
+                        'target_len': 6,  # 6 hours
+                        'flow_diff_r': 0.5, # the maximum possible ratio of in-out flow difference of a day, used to remove outliers
+                        },
               }
 
 
@@ -41,6 +64,7 @@ def drop_midnight(data, start_minute, end_minute):
     data.index.name = 'time'
     data.reset_index(inplace=True)
     minute = (data.time.dt.hour * 60 + data.time.dt.minute).values
+    minute[minute == 0] = 1440
 
     is_running = np.zeros_like(minute)
     is_running[(minute >= start_minute) & (minute < end_minute)] = 1
@@ -85,12 +109,13 @@ def get_abnormal_index(data, s=14, prominence=300, patch_len=3, neighbor=1, fig=
     if fig:
         fig, ax = plt.subplots(figsize=(30, 5))
         ax.plot(data0['time'], data0['inflow'])
-        ax.plot(data0.loc[index,'time'], data0.loc[index, 'inflow'], 'ro')
+        ax.plot(data0.loc[index, 'time'], data0.loc[index, 'inflow'], 'ro')
         fig.tight_layout()
 
     return index
 
-#%%
+
+# %%
 def detect_anomaly(data, args):
     """Detect anomalies when the difference of daily inflow and outflow larger than args.flow_diff_r,
     or when the total daily flow is zero, mark them as NaN."""
@@ -100,7 +125,7 @@ def detect_anomaly(data, args):
     daily_flow_diff = daily_inflow - daily_outflow
     diff_percent = 2 * np.abs(daily_flow_diff) / (daily_inflow + daily_outflow + 1e-8)
     data.loc[diff_percent.ravel() > flow_diff_r, 'inflow'] = np.nan
-    data.loc[(daily_inflow+daily_outflow).ravel() == 0, 'inflow'] = np.nan
+    data.loc[(daily_inflow + daily_outflow).ravel() == 0, 'inflow'] = np.nan
     count = np.sum(np.isnan(data.inflow))
     print(f'Marked {count} anomalies ({count / len(data.inflow):.5f}%), will be ignored in training and test.')
     return data
@@ -138,7 +163,7 @@ def read_data(args):
     unique_minute = minute_in_day.unique()
     unique_minute.sort()
     time_index = np.arange(len(unique_minute))
-    time_index = time_index//args.stride
+    time_index = time_index // args.stride
     time_index_map = dict(zip(minute_in_day, time_index))
     data['time_in_day'] = minute_in_day.map(time_index_map).astype(args.default_int)
 
@@ -156,7 +181,7 @@ def split_train_val_test(data, args):
     train_r, val_r, test_r = train_r / total_r, val_r / total_r, test_r / total_r
 
     t_resolution = int(args.t_resolution[:-1])
-    day_length = (args.end_minute - args.start_minute)//t_resolution
+    day_length = (args.end_minute - args.start_minute) // t_resolution
     data_len = data.time.nunique()
     time_index = np.sort(data.time.unique())
 
@@ -165,8 +190,8 @@ def split_train_val_test(data, args):
     val_size = int(((data_len - context_len) * val_r) // day_length * day_length)
 
     train_idx = time_index[:train_size]
-    val_idx = time_index[train_size-context_len:train_size + val_size]
-    test_idx = time_index[train_size + val_size-context_len:]
+    val_idx = time_index[train_size - context_len:train_size + val_size]
+    test_idx = time_index[train_size + val_size - context_len:]
 
     train_data = data.loc[data.time.isin(train_idx), :].reset_index(drop=True)
     val_data = data.loc[data.time.isin(val_idx), :].reset_index(drop=True)
@@ -189,12 +214,12 @@ class MetroDataset(Dataset):
         self.f_index, self.if_index = self.get_feasible_index()  # f_index is the union of normal and abnormal index
         self.normal_index = self.f_index
         self.abnormal_index = np.array([])
-        self._index = self.f_index                              # Default f_index is the self._index
+        self._index = self.f_index  # Default f_index is the self._index
         self.abnormal_station = None
 
         self.flow_type = torch.concat((torch.zeros(self.num_patch, dtype=args.torch_int),
                                        torch.ones(self.num_patch, dtype=args.torch_int),
-                                       torch.ones(self.num_target_patch, dtype=args.torch_int)*2))
+                                       torch.ones(self.num_target_patch, dtype=args.torch_int) * 2))
         self.num_flow_type = 3
         self.num_station = self.data.station.nunique()
         self.num_weekday = 7
@@ -206,7 +231,7 @@ class MetroDataset(Dataset):
                       self.data.loc[self.f_index, 'time'].dt.hour * 60
         self.num_time_in_day = len(time_in_day.unique())
         t_resolution = int(args.t_resolution[:-1])
-        if self.num_time_in_day > (time_in_day.max() - time_in_day.min())/t_resolution/self.stride + 1:
+        if self.num_time_in_day > (time_in_day.max() - time_in_day.min()) / t_resolution / self.stride + 1:
             warnings.warn(f'num_time_in_day {self.num_time_in_day}, please check the stride, patch_len are correct.')
 
     def __len__(self):
@@ -268,9 +293,11 @@ class MetroDataset(Dataset):
          target: target_len
          """
         data_piece = self.data.iloc[self._index[index]:self._index[index] + self.sample_len, :]
-        outflow_data = torch.from_numpy(data_piece.outflow.values[:self.context_len]).unfold(0, self.patch_len, self.stride)
+        outflow_data = torch.from_numpy(data_piece.outflow.values[:self.context_len]).unfold(0, self.patch_len,
+                                                                                             self.stride)
         inflow_data = torch.from_numpy(data_piece.inflow.values).unfold(0, self.patch_len, self.stride)
-        inflow_data, target, fcst_loc = self.random_mask(inflow_data, method=self.mask_method, mask_ratio=self.mask_ratio)
+        inflow_data, target, fcst_loc = self.random_mask(inflow_data, method=self.mask_method,
+                                                         mask_ratio=self.mask_ratio)
         data = torch.cat((outflow_data, inflow_data), dim=0)
         fcst_loc += self.num_patch
 
@@ -280,7 +307,7 @@ class MetroDataset(Dataset):
         time_in_day = torch.cat((features[0:self.num_patch, 2], features[:, 2]), dim=0)
 
         flow_type = self.flow_type.clone()
-        flow_type[fcst_loc] = self.num_flow_type-1
+        flow_type[fcst_loc] = self.num_flow_type - 1
 
         return (data, flow_type, station, weekday, time_in_day, fcst_loc), target
 
@@ -324,8 +351,8 @@ class MetroDataset(Dataset):
         # Get the location of index in self._index.
         index = np.where(self._index == index_start)[0][0]
 
-        old_method=self.mask_method
-        old_mask_ratio=self.mask_ratio
+        old_method = self.mask_method
+        old_mask_ratio = self.mask_ratio
 
         self.mask_method = method
         self.mask_ratio = mask_ratio
