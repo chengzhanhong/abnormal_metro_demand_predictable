@@ -37,6 +37,21 @@ data_infos = {'guangzhou': {'data_path': '../../../data/GuangzhouMetro//',
                         'target_len': 6,  # 6 hours
                         'flow_diff_r': 0.5, # the maximum possible ratio of in-out flow difference of a day, used to remove outliers
                         },
+              'hangzhou': {'data_path': '../../data/HangzhouMetro/',
+                           'inflow_file': 'in_data.csv',
+                           'outflow_file': 'out_data.csv',
+                           'start_minute': 330,
+                           'end_minute': 1440,
+                           'subsample_start': '2019-01-01',
+                           'subsample_end': '2019-01-20',
+                           'prominence': 100,  # used to determine abnormal peaks
+                           't_resolution': '10T',  # time resolution used in the model
+                           'patch_len': 3,
+                           'stride': 3,
+                           'num_patch': 37,
+                           'target_len': 36,  # 6 hours
+                           'flow_diff_r': 0.4, # the maximum possible ratio of in-out flow difference of a day, used to remove outliers
+                        },
               }
 
 
