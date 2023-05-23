@@ -1,0 +1,47 @@
+2023-05-19 18:41:16,821 INFO    StreamThr :11500 [internal.py:wandb_internal():86] W&B internal server running at pid: 11500, started at: 2023-05-19 18:41:16.820042
+2023-05-19 18:41:16,823 DEBUG   HandlerThread:11500 [handler.py:handle_request():144] handle_request: status
+2023-05-19 18:41:16,827 INFO    WriterThread:11500 [datastore.py:open_for_write():85] open: G:\Work\mcgill\metro\forecastable\exps\ABtransformer\wandb\run-20230519_184116-jya9es4i\run-jya9es4i.wandb
+2023-05-19 18:41:16,832 DEBUG   SenderThread:11500 [sender.py:send():375] send: header
+2023-05-19 18:41:16,886 DEBUG   SenderThread:11500 [sender.py:send():375] send: run
+2023-05-19 18:41:17,184 INFO    SenderThread:11500 [dir_watcher.py:__init__():219] watching files in: G:\Work\mcgill\metro\forecastable\exps\ABtransformer\wandb\run-20230519_184116-jya9es4i\files
+2023-05-19 18:41:17,185 INFO    SenderThread:11500 [sender.py:_start_run_threads():1124] run started: jya9es4i with start time 1684536076.819062
+2023-05-19 18:41:17,185 DEBUG   SenderThread:11500 [sender.py:send_request():402] send_request: summary_record
+2023-05-19 18:41:17,185 INFO    SenderThread:11500 [sender.py:_save_file():1378] saving file wandb-summary.json with policy end
+2023-05-19 18:41:17,188 DEBUG   HandlerThread:11500 [handler.py:handle_request():144] handle_request: check_version
+2023-05-19 18:41:17,188 DEBUG   SenderThread:11500 [sender.py:send_request():402] send_request: check_version
+2023-05-19 18:41:17,263 DEBUG   HandlerThread:11500 [handler.py:handle_request():144] handle_request: run_start
+2023-05-19 18:41:17,279 DEBUG   HandlerThread:11500 [system_info.py:__init__():31] System info init
+2023-05-19 18:41:17,279 DEBUG   HandlerThread:11500 [system_info.py:__init__():46] System info init done
+2023-05-19 18:41:17,279 INFO    HandlerThread:11500 [system_monitor.py:start():181] Starting system monitor
+2023-05-19 18:41:17,280 INFO    SystemMonitor:11500 [system_monitor.py:_start():145] Starting system asset monitoring threads
+2023-05-19 18:41:17,280 INFO    HandlerThread:11500 [system_monitor.py:probe():201] Collecting system info
+2023-05-19 18:41:17,283 INFO    SystemMonitor:11500 [interfaces.py:start():190] Started cpu monitoring
+2023-05-19 18:41:17,284 INFO    SystemMonitor:11500 [interfaces.py:start():190] Started disk monitoring
+2023-05-19 18:41:17,285 INFO    SystemMonitor:11500 [interfaces.py:start():190] Started gpu monitoring
+2023-05-19 18:41:17,290 INFO    SystemMonitor:11500 [interfaces.py:start():190] Started memory monitoring
+2023-05-19 18:41:17,298 INFO    SystemMonitor:11500 [interfaces.py:start():190] Started network monitoring
+2023-05-19 18:41:17,304 DEBUG   HandlerThread:11500 [system_info.py:probe():195] Probing system
+2023-05-19 18:41:17,306 DEBUG   HandlerThread:11500 [system_info.py:_probe_git():180] Probing git
+2023-05-19 18:41:18,199 INFO    Thread-36 :11500 [dir_watcher.py:_on_file_created():278] file/dir created: G:\Work\mcgill\metro\forecastable\exps\ABtransformer\wandb\run-20230519_184116-jya9es4i\files\wandb-summary.json
+2023-05-19 18:41:18,268 DEBUG   HandlerThread:11500 [system_info.py:_probe_git():188] Probing git done
+2023-05-19 18:41:18,268 DEBUG   HandlerThread:11500 [system_info.py:probe():240] Probing system done
+2023-05-19 18:41:18,268 DEBUG   HandlerThread:11500 [system_monitor.py:probe():210] {'os': 'Windows-10-10.0.19041-SP0', 'python': '3.8.1', 'heartbeatAt': '2023-05-19T22:41:17.304043', 'startedAt': '2023-05-19T22:41:16.805108', 'docker': None, 'cuda': None, 'args': (), 'state': 'running', 'program': 'G:/Work/mcgill/metro/forecastable/exps/ABtransformer/MCR02self_supervised_v.py', 'codePath': 'exps\\ABtransformer\\MCR02self_supervised_v.py', 'git': {'remote': 'https://github.com/chengzhanhong/forecastable.git', 'commit': '3f53b768dce4a611104b166b74d02816459275ba'}, 'email': None, 'root': 'G:/Work/mcgill/metro/forecastable', 'host': '153SMART-07', 'username': 'jwang317', 'executable': 'C:\\Users\\jwang317\\AppData\\Local\\Programs\\Python\\Python38\\python.exe', 'cpu_count': 8, 'cpu_count_logical': 8, 'cpu_freq': {'current': 3000.0, 'min': 0.0, 'max': 3000.0}, 'cpu_freq_per_core': [{'current': 3000.0, 'min': 0.0, 'max': 3000.0}], 'disk': {'total': 1863.0156211853027, 'used': 160.9435272216797}, 'gpu': 'NVIDIA GeForce RTX 2080 SUPER', 'gpu_count': 1, 'gpu_devices': [{'name': 'NVIDIA GeForce RTX 2080 SUPER', 'memory_total': 8589934592}], 'memory': {'total': 15.823135375976562}}
+2023-05-19 18:41:18,268 INFO    HandlerThread:11500 [system_monitor.py:probe():211] Finished collecting system info
+2023-05-19 18:41:18,268 INFO    HandlerThread:11500 [system_monitor.py:probe():214] Publishing system info
+2023-05-19 18:41:18,269 DEBUG   HandlerThread:11500 [system_info.py:_save_pip():51] Saving list of pip packages installed into the current environment
+2023-05-19 18:41:18,270 DEBUG   HandlerThread:11500 [system_info.py:_save_pip():67] Saving pip packages done
+2023-05-19 18:41:18,272 INFO    HandlerThread:11500 [system_monitor.py:probe():216] Finished publishing system info
+2023-05-19 18:41:18,291 DEBUG   SenderThread:11500 [sender.py:send():375] send: files
+2023-05-19 18:41:18,291 INFO    SenderThread:11500 [sender.py:_save_file():1378] saving file wandb-metadata.json with policy now
+2023-05-19 18:41:18,303 DEBUG   HandlerThread:11500 [handler.py:handle_request():144] handle_request: stop_status
+2023-05-19 18:41:18,303 DEBUG   SenderThread:11500 [sender.py:send_request():402] send_request: stop_status
+2023-05-19 18:41:18,373 DEBUG   SenderThread:11500 [sender.py:send():375] send: telemetry
+2023-05-19 18:41:18,373 DEBUG   SenderThread:11500 [sender.py:send():375] send: telemetry
+2023-05-19 18:41:18,373 DEBUG   SenderThread:11500 [sender.py:send():375] send: run
+2023-05-19 18:41:18,529 INFO    SenderThread:11500 [sender.py:send_run():1002] updated run: jya9es4i
+2023-05-19 18:41:18,611 INFO    wandb-upload_0:11500 [upload_job.py:push():137] Uploaded file C:\Users\jwang317\AppData\Local\Temp\tmp8jrw6snxwandb\rfvwj7w3-wandb-metadata.json
+2023-05-19 18:41:19,201 INFO    Thread-36 :11500 [dir_watcher.py:_on_file_modified():295] file/dir modified: G:\Work\mcgill\metro\forecastable\exps\ABtransformer\wandb\run-20230519_184116-jya9es4i\files\config.yaml
+2023-05-19 18:41:19,201 INFO    Thread-36 :11500 [dir_watcher.py:_on_file_created():278] file/dir created: G:\Work\mcgill\metro\forecastable\exps\ABtransformer\wandb\run-20230519_184116-jya9es4i\files\output.log
+2023-05-19 18:41:19,201 INFO    Thread-36 :11500 [dir_watcher.py:_on_file_created():278] file/dir created: G:\Work\mcgill\metro\forecastable\exps\ABtransformer\wandb\run-20230519_184116-jya9es4i\files\wandb-metadata.json
+2023-05-19 18:41:19,202 INFO    Thread-36 :11500 [dir_watcher.py:_on_file_created():278] file/dir created: G:\Work\mcgill\metro\forecastable\exps\ABtransformer\wandb\run-20230519_184116-jya9es4i\files\requirements.txt
+2023-05-19 18:41:21,206 INFO    Thread-36 :11500 [dir_watcher.py:_on_file_modified():295] file/dir modified: G:\Work\mcgill\metro\forecastable\exps\ABtransformer\wandb\run-20230519_184116-jya9es4i\files\output.log

@@ -232,7 +232,7 @@ class MetroDataset(Dataset):
         self._index = self.f_index  # Default f_index is the self._index
         self.abnormal_station = None
 
-        self.flow_type = torch.concat((torch.zeros(self.num_patch, dtype=args.torch_int),
+        self.flow_type = torch.cat((torch.zeros(self.num_patch, dtype=args.torch_int),
                                        torch.ones(self.num_patch, dtype=args.torch_int),
                                        torch.ones(self.num_target_patch, dtype=args.torch_int) * 2))
         self.num_flow_type = 3
@@ -343,7 +343,7 @@ class MetroDataset(Dataset):
         if method == "target":
             fcst_loc = torch.arange(self.num_patch, n)
         elif method == 'both':
-            fcst_loc = torch.concat([torch.randperm(self.num_patch)[:int((self.num_patch) * mask_ratio)],
+            fcst_loc = torch.cat([torch.randperm(self.num_patch)[:int((self.num_patch) * mask_ratio)],
                                      torch.arange(self.num_patch, n)])
         else:
             raise ValueError('method must be "target" or "both".')
@@ -377,3 +377,75 @@ class MetroDataset(Dataset):
         self.mask_method = old_method
         self.mask_ratio = old_mask_ratio
         return (x, y), data_piece
+
+
+class MetroDataset_v(MetroDataset):
+    def __init__(self, data, mask_method, args):
+        super(MetroDataset_v, self).__init__(data, mask_method, args)
+        self.num_flow_type = 2
+        self.flow_type = torch.zeros(self.num_patch + self.num_target_patch, dtype=args.torch_int)
+
+    def __getitem__(self, index):
+        """Returns
+         context: num_patch*2 x patch_len
+         flow_type: num_patch*2
+         station: num_patch*2
+         weekday: num_patch*2
+         time_in_day: num_patch*2
+         target: target_len
+         """
+        data_piece = self.data.iloc[self.f_index[index]:self.f_index[index] + self.sample_len, :]
+        outflow_data = torch.from_numpy(data_piece.outflow.values[:self.context_len]).unfold(0, self.patch_len,
+                                                                                             self.stride)
+        inflow_data = torch.from_numpy(data_piece.inflow.values[:]).unfold(0, self.patch_len, self.stride)
+        inflow_data, target, fcst_loc, mask_loc, target_loc = self.random_mask(inflow_data, method=self.mask_method,
+                                                                               mask_ratio=self.mask_ratio)
+        # outflow_data[mask_loc, :] = 0
+        outflow_data = torch.cat((outflow_data,
+                                  torch.zeros_like(inflow_data)[:inflow_data.shape[0] - outflow_data.shape[0], :]),
+                                 dim=0)
+        data = torch.cat((outflow_data, inflow_data), dim=1)
+        # fcst_loc += self.num_patch
+
+        features = torch.from_numpy(data_piece[['station', 'weekday', 'time_in_day']].values[:: self.stride])
+        # station = torch.cat((features[0:self.num_patch, 0], features[:, 0]), dim=0)
+        # weekday = torch.cat((features[0:self.num_patch, 1], features[:, 1]), dim=0)
+        # time_in_day = torch.cat((features[0:self.num_patch, 2], features[:, 2]), dim=0)
+
+        station = features[:, 0]
+        weekday = features[:, 1]
+        time_in_day = features[:, 2]
+
+        flow_type = self.flow_type.clone()
+        # flow_type[mask_loc] = 1
+        flow_type[target_loc] = 1
+
+        return (data, flow_type, station, weekday, time_in_day, fcst_loc), target
+
+    def random_mask(self, data, method='target', mask_ratio=0.2):
+        """Randomly mask the data with mask_ratio.
+        method: 'target' or 'context'
+        mask_ratio: float, the ratio of masked data in the context, does not work for 'target' method.
+        data: the data to be masked (inflow only), shape: (num_patch+num_target_patch, patch_len)
+        return
+        -------
+        masked_data: masked data.
+        target: target data.
+        fcst_loc: the location of the target data.
+        """
+        masked_data = data.clone()
+        n = data.shape[0]
+        mask_loc, target_loc = None, None
+        if method == "target":
+            target_loc = torch.arange(self.num_patch, n)
+            fcst_loc = torch.arange(self.num_patch, n)
+        elif method == 'both':
+            mask_loc = torch.randperm(self.num_patch)[:int(self.num_patch * mask_ratio)]
+            target_loc = torch.arange(self.num_patch, n)
+            fcst_loc = torch.cat([mask_loc, target_loc])
+        else:
+            raise ValueError('method must be "target" or "context" or "both".')
+
+        target = data[fcst_loc, :]
+        masked_data[fcst_loc, :] = 0
+        return masked_data, target, fcst_loc, mask_loc, target_loc
