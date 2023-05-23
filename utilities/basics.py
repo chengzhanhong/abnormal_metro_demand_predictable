@@ -57,33 +57,6 @@ def get_attn_mask(num_patch, num_target_patch, type='strict', device='cpu'):
     return attn_mask.to(device)
 
 
-def exam_result(t, s, model, dataset, args):
-    device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-    t = pd.Timestamp(t)
-    (x, y), data_piece = dataset.get_data_from_ts(t, s)
-    fcst_loc = x[-1].detach().numpy().reshape(-1,1) - args.num_patch
-    fcst_loc = fcst_loc*args.patch_len + np.arange(args.patch_len).reshape(1,-1)
-    fcst_loc = fcst_loc.reshape(-1)
-
-    x = [xx.unsqueeze(0) for xx in x]
-    x = [xx.to(device) for xx in x]
-    model.eval()
-    y_hat = model(x)   # (1, num_fcst, patch_len)
-    y_hat = y_hat.detach().cpu().numpy().reshape(-1)
-
-    fig, ax = plt.subplots()
-    ax.plot(data_piece['time'].values, data_piece['inflow'].values, label='Real boarding', color='C0')
-    ax.plot(data_piece['time'].values[:args.context_len],
-            data_piece['outflow'].values[:args.context_len],
-            label='Real alighting', color='C1')
-    ax.plot(data_piece['time'].values[fcst_loc], y_hat, '-o', label='Prediction', color='C2')
-    ax.set_xlabel('Time')
-    # rotate xticks labels
-    plt.setp(ax.get_xticklabels(), rotation=30, horizontalalignment='right')
-    plt.legend()
-    plt.show()
-    return fig
-
 def get_time_x(start, end, patch_len, num_points):
     eps = 1/patch_len/2
     start = start - 0.5 + eps
@@ -100,14 +73,23 @@ def exam_attention(t, s, model, dataset, args, loc=75, layer=2):
     x = [xx.unsqueeze(0) for xx in x]
     x = [xx.to(device) for xx in x]
     model.eval()
-    y_hat = model(x)   # (1, num_fcst, patch_len)
-    y_hat = y_hat.detach().cpu().numpy().reshape(-1)
+    y_hat = model(x)   # (1, num_fcst, patch_len, output_dim)
+    y_hat = y_hat.detach().cpu().numpy().reshape(-1, model.output_dim)  # (num_fcst*patch_len, output_dim)
+
+    if args.loss in {'quantile3', 'quantile5'}:
+        y_mean = y_hat[:, 0]
+        y_lb = y_hat[:, 1]
+        y_ub = y_hat[:, 2]
+    elif args.loss == 'gaussian_nll':
+        y_mean = y_hat[:, 0]
+        y_lb = y_hat[:, 0] - y_hat[:, 1]
+        y_ub = y_hat[:, 0] + y_hat[:, 1]
+    else:
+        y_mean = y_hat
+        y_lb = None
+        y_ub = None
 
     attns = model.backbone.encoder.layers[layer].attn.squeeze(0).detach().cpu().numpy()
-    #     for head in range(args.n_heads):
-    #         attn = attns[head]
-    # fig, ax = plt.subplots()
-    # ax.imshow(attn, cmap='gray', vmax=1, vmin=0)
 
     # loc = 75  # The location of the patch
     attn_mats = [attns[head][[loc], :] for head in range(args.n_heads)]
@@ -124,11 +106,17 @@ def exam_attention(t, s, model, dataset, args, loc=75, layer=2):
                  data_piece['outflow'].values[:args.context_len], label='Real alighting', color='C1')
     axes[0].plot(get_time_x(num_patch, attn_mats.shape[1]-1, patch_len, dataset.sample_len),
                  data_piece['inflow'].values, label='Real boarding', color='C0')
-    axes[0].plot(get_time_x(2*num_patch, attn_mats.shape[1]-1, patch_len, num_target_patch*patch_len),
-                 y_hat, label='Prediction', color='C2')
     # a vertical line at the location of the target patch
     axes[0].axvline(x=loc, color='red', linestyle='--')
     # set title
     axes[0].set_title(f'{t} at station {s}')
-    return fig
 
+    # plot the forecasted values
+    x_time = get_time_x(2*num_patch, attn_mats.shape[1]-1, patch_len, num_target_patch*patch_len)
+    axes[0].plot(x_time, y_mean, label='Prediction', color='C2')
+    # fill the confidence interval
+    if y_lb is not None:
+        axes[0].fill_between(x_time, y_lb, y_ub, color='C2', alpha=0.2, interpolate=True)
+    axes[0].legend()
+
+    return fig

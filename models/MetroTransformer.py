@@ -1,4 +1,3 @@
-
 __all__ = ['MetroTransformer']
 
 # Cell
@@ -15,7 +14,7 @@ from .basics import *
 from .attention import *
 from .revin import *
 
-            
+
 # Cell
 class MetroTransformer(nn.Module):
     """
@@ -23,12 +22,14 @@ class MetroTransformer(nn.Module):
          [bs x target_len] for prediction
          [bs x num_patch x patch_len] for pretrain
     """
-    def __init__(self, patch_len:int, num_patch:int, num_target_patch, num_embeds:tuple=(2,159,7,217),
-                 n_layers:int=3, d_model=128, n_heads=16, d_ff:int=256,
-                 norm:str='LayerNorm', attn_dropout:float=0., dropout:float=0., act:str="gelu",
-                 pre_norm:bool=False, store_attn:bool=False,
-                 pe:str='zeros', learn_pe:bool=True, head_dropout = 0, 
-                 attn_mask=None, x_loc=None, x_scale=None, **kwargs):
+
+    def __init__(self, patch_len: int, num_patch: int, num_target_patch, num_embeds: tuple = (2, 159, 7, 217),
+                 n_layers: int = 3, d_model=128, n_heads=16, d_ff: int = 256,
+                 norm: str = 'LayerNorm', attn_dropout: float = 0., dropout: float = 0., act: str = "gelu",
+                 pre_norm: bool = False, store_attn: bool = False,
+                 pe: str = 'zeros', learn_pe: bool = True, head_dropout=0,
+                 attn_mask=None, x_loc=None, x_scale=None, station_rank=0, stride=None,
+                 loss='rmse', **kwargs):
         """
         Parameters:
             num_embeds: tuple of number of embeddings for flow_type, station, weekday, or time_in_day
@@ -40,23 +41,27 @@ class MetroTransformer(nn.Module):
         """
         super().__init__()
 
-        num_patch = num_patch*2
+        num_patch = num_patch * 2
         self.num_patch = num_patch
         self.patch_len = patch_len
         self.num_target_patch = num_target_patch
         self.attn_mask = attn_mask
         self.x_loc = x_loc
         self.x_scale = x_scale
+        self.loss = loss
 
         # Backbone
         self.backbone = MetroEncoder(num_patch=num_patch, patch_len=patch_len, num_target_patch=num_target_patch,
                                      num_embeds=num_embeds, n_layers=n_layers, d_model=d_model,
                                      n_heads=n_heads, d_ff=d_ff, attn_dropout=attn_dropout,
                                      dropout=dropout, act=act, pre_norm=pre_norm, store_attn=store_attn,
-                                     norm=norm, pe=pe, learn_pe=learn_pe)
+                                     norm=norm, pe=pe, learn_pe=learn_pe, station_rank=station_rank)
 
         # Head
-        self.head = ForecastHead(d_model, patch_len, head_dropout)
+        output_patch_len = patch_len - (patch_len - stride)
+        output_dims = {'rmse': 1, 'mae': 1, 'gaussian_nll': 2, 'quantile1': 1, 'quantile3': 3, 'quantile5': 5}
+        self.output_dim = output_dims[loss]
+        self.head = ForecastHead(d_model, output_patch_len, head_dropout, self.output_dim)
 
         # Standardization
         self.standardization = Standardization(self.x_loc, self.x_scale)
@@ -75,11 +80,21 @@ class MetroTransformer(nn.Module):
         # if self.post_zero:
         #     z[fcst_loc==1] = 0
 
-        z = self.backbone(z, features, self.attn_mask)        # z: [bs x (num_patch+num_target_patch) x d_model]
-        z = self.head(z, fcst_loc)                            # z: [bs x num_fcst x patch_len]
+        z = self.backbone(z, features, self.attn_mask)  # z: [bs x (num_patch+num_target_patch) x d_model]
+        z = self.head(z, fcst_loc)  # z: [bs x num_fcst x patch_len, output_dim]
 
-        z = self.standardization(z, stations, 'denorm')       # z: [bs x num_fcst x patch_len]
-        z = self.softplus(z)
+        if self.loss == 'gaussian_nll':
+            z_clone = z[:, :, :, 0].clone()
+            z_clone = self.standardization(z_clone, stations, 'denorm')
+            z[:, :, :, 0] = self.softplus(z_clone)
+            z_clone1 = z[:, :, :, 1].clone()
+            z_clone1 = self.softplus(z_clone1)
+            z[:, :, :, 1] = self.standardization(z_clone1, stations, 'descale')
+        else:
+            for i in range(self.output_dim):
+                z[:, :, :, i] = self.standardization(z[:, :, :, i], stations,
+                                                     'denorm')  # z: [bs x num_fcst x patch_len x *]
+            z = self.softplus(z)
         return z
 
 
@@ -89,7 +104,7 @@ class Standardization(nn.Module):
         self.loc = loc.reshape([-1, 1, 1])
         self.scale = scale.reshape([-1, 1, 1])
 
-    def forward(self, x, i, mode:str):
+    def forward(self, x, i, mode: str):
         """
         x: (bs, num_patch, patch_len)
         i: index of the patch, (bs,)
@@ -98,14 +113,44 @@ class Standardization(nn.Module):
             x = (x - self.loc[i]) / self.scale[i]
         elif mode == 'denorm':
             x = x * self.scale[i] + self.loc[i]
-        else: raise NotImplementedError
+        elif mode == 'descale':
+            x = x * self.scale[i]
+        else:
+            raise NotImplementedError
         return x
+
+
+class LowRankEmbedding(nn.Module):
+    def __init__(self, num_embeddings, embedding_dim, rank):
+        super(LowRankEmbedding, self).__init__()
+        self.num_embeddings = num_embeddings
+        self.embedding_dim = embedding_dim
+        self.rank = rank
+
+        # Define the factor matrices
+        self.W1 = nn.Parameter(torch.Tensor(num_embeddings, rank))
+        self.W2 = nn.Parameter(torch.Tensor(rank, embedding_dim))
+        self.intialize()
+
+    def intialize(self):
+        # Initialize the factor matrices
+        nn.init.xavier_uniform_(self.W1)
+        nn.init.xavier_uniform_(self.W2)
+
+    def forward(self, input):
+        # Compute the low-rank weight matrix
+        weight = torch.matmul(self.W1, self.W2)
+
+        # Perform the embedding lookup
+        embedded = torch.embedding(weight, input)
+
+        return embedded
 
 
 class MetroEncoder(nn.Module):
     def __init__(self, num_patch, num_target_patch, patch_len, num_embeds, n_layers=3, d_model=128, n_heads=16,
                  d_ff=256, norm='BatchNorm', attn_dropout=0., dropout=0., act="gelu", store_attn=False,
-                 pre_norm=False, pe='zeros', learn_pe=True):
+                 pre_norm=False, pe='zeros', learn_pe=True, station_rank=0, **kwargs):
 
         super().__init__()
         self.num_patch = num_patch
@@ -116,49 +161,52 @@ class MetroEncoder(nn.Module):
         self.W_P = nn.Linear(patch_len, d_model)
 
         # Positional encoding
-        self.W_pos = positional_encoding(pe, learn_pe, num_patch+num_target_patch, d_model)
+        self.W_pos = positional_encoding(pe, learn_pe, num_patch + num_target_patch, d_model)
 
         # Flow_type, station, weekday, or time_in_day encoding
         self.feature_eb = nn.ModuleList([nn.Embedding(num_embeds[i], d_model) for i in range(len(num_embeds))])
+        if station_rank > 0:
+            self.feature_eb[1] = LowRankEmbedding(num_embeds[1], d_model, station_rank)
 
         # Residual dropout
         self.dropout = nn.Dropout(dropout)
 
         # Encoder
         self.encoder = TSTEncoder(d_model, n_heads, d_ff=d_ff, norm=norm, attn_dropout=attn_dropout, dropout=dropout,
-                                   pre_norm=pre_norm, activation=act, n_layers=n_layers, store_attn=store_attn)
+                                  pre_norm=pre_norm, activation=act, n_layers=n_layers, store_attn=store_attn)
 
     def forward(self, z, features, attn_mask=None) -> Tensor:
         """
         z: tensor [bs x num_patch x patch_len]
         features: tuple of tensor [bs x num_patch], representing flow_type, station, weekday, or time_in_day
         """
-        z = self.W_P(z)                                                          # z: [bs x num_patch x d_model]
+        z = self.W_P(z)  # z: [bs x num_patch x d_model]
         z = z + self.W_pos
 
         # feature encoding
         for i, feature_eb in enumerate(self.feature_eb):
-            z += feature_eb(features[i])                            # z: [bs x num_patch x d_model]
+            z += feature_eb(features[i])  # z: [bs x num_patch x d_model]
 
         z = self.dropout(z)
         # Encoder
-        z = self.encoder(z, attn_mask)                                                      # z: [bs x num_patch x d_model]
+        z = self.encoder(z, attn_mask)  # z: [bs x num_patch x d_model]
         return z
-    
-    
+
+
 # Cell
 class TSTEncoder(nn.Module):
-    def __init__(self, d_model, n_heads, d_ff=None, 
-                        norm='BatchNorm', attn_dropout=0., dropout=0., activation='gelu',
-                        n_layers=1, pre_norm=False, store_attn=False):
+    def __init__(self, d_model, n_heads, d_ff=None,
+                 norm='BatchNorm', attn_dropout=0., dropout=0., activation='gelu',
+                 n_layers=1, pre_norm=False, store_attn=False):
         super().__init__()
 
         self.layers = nn.ModuleList([TSTEncoderLayer(d_model, n_heads=n_heads, d_ff=d_ff, norm=norm,
-                                                      attn_dropout=attn_dropout, dropout=dropout,
-                                                      activation=activation,
-                                                      pre_norm=pre_norm, store_attn=store_attn) for i in range(n_layers)])
+                                                     attn_dropout=attn_dropout, dropout=dropout,
+                                                     activation=activation,
+                                                     pre_norm=pre_norm, store_attn=store_attn) for i in
+                                     range(n_layers)])
 
-    def forward(self, src:Tensor, attn_mask=None):
+    def forward(self, src: Tensor, attn_mask=None):
         """
         src: tensor [bs x q_len x d_model]
         """
@@ -171,10 +219,10 @@ class TSTEncoder(nn.Module):
 class TSTEncoderLayer(nn.Module):
     def __init__(self, d_model, n_heads, d_ff=256, store_attn=False,
                  norm='BatchNorm', attn_dropout=0., dropout=0., bias=True,
-                activation="gelu", pre_norm=False):
+                 activation="gelu", pre_norm=False):
         """pre_norm: if True, apply normalization before residual and multi-head attention."""
         super().__init__()
-        assert not d_model%n_heads, f"d_model ({d_model}) must be divisible by n_heads ({n_heads})"
+        assert not d_model % n_heads, f"d_model ({d_model}) must be divisible by n_heads ({n_heads})"
         d_k = d_model // n_heads
         d_v = d_model // n_heads
 
@@ -184,7 +232,7 @@ class TSTEncoderLayer(nn.Module):
         # Add & Norm
         self.dropout_attn = nn.Dropout(dropout)
         if "batch" in norm.lower():
-            self.norm_attn = nn.Sequential(Transpose(1,2), nn.BatchNorm1d(d_model), Transpose(1,2))
+            self.norm_attn = nn.Sequential(Transpose(1, 2), nn.BatchNorm1d(d_model), Transpose(1, 2))
         elif "layer" in norm.lower():
             self.norm_attn = nn.LayerNorm(d_model)
         else:
@@ -199,7 +247,7 @@ class TSTEncoderLayer(nn.Module):
         # Add & Norm
         self.dropout_ffn = nn.Dropout(dropout)
         if "batch" in norm.lower():
-            self.norm_ffn = nn.Sequential(Transpose(1,2), nn.BatchNorm1d(d_model), Transpose(1,2))
+            self.norm_ffn = nn.Sequential(Transpose(1, 2), nn.BatchNorm1d(d_model), Transpose(1, 2))
         elif "layer" in norm.lower():
             self.norm_ffn = nn.LayerNorm(d_model)
         else:
@@ -208,8 +256,7 @@ class TSTEncoderLayer(nn.Module):
         self.pre_norm = pre_norm
         self.store_attn = store_attn
 
-
-    def forward(self, src:Tensor, attn_mask=None):
+    def forward(self, src: Tensor, attn_mask=None):
         """
         src: tensor [bs x q_len x d_model]
         """
@@ -221,7 +268,7 @@ class TSTEncoderLayer(nn.Module):
         if self.store_attn:
             self.attn = attn
         ## Add & Norm
-        src = src + self.dropout_attn(src2) # Add: residual connection with residual dropout
+        src = src + self.dropout_attn(src2)  # Add: residual connection with residual dropout
         if not self.pre_norm:
             src = self.norm_attn(src)
 
@@ -231,7 +278,7 @@ class TSTEncoderLayer(nn.Module):
         ## Position-wise Feed-Forward
         src2 = self.ff(src)
         ## Add & Norm
-        src = src + self.dropout_ffn(src2) # Add: residual connection with residual dropout
+        src = src + self.dropout_ffn(src2)  # Add: residual connection with residual dropout
         if not self.pre_norm:
             src = self.norm_ffn(src)
 
@@ -239,10 +286,12 @@ class TSTEncoderLayer(nn.Module):
 
 
 class ForecastHead(nn.Module):
-    def __init__(self, d_model, patch_len, dropout):
+    def __init__(self, d_model, patch_len, dropout, output_dim=1):
         super().__init__()
         self.dropout = nn.Dropout(dropout)
-        self.linear = nn.Linear(d_model, patch_len)
+        self.linear = nn.Linear(d_model, patch_len * output_dim)
+        self.patch_len = patch_len
+        self.output_dim = output_dim
 
     def forward(self, x, fcst_loc):
         """
@@ -250,5 +299,6 @@ class ForecastHead(nn.Module):
         output: tensor [bs x num_fcst x patch_len]
         """
         x = torch.gather(x, dim=1, index=fcst_loc.unsqueeze(-1).expand(-1, -1, x.size(-1)))  # [bs x num_fcst x d_model]
-        x = self.linear( self.dropout(x) )      # [bs x num_fcst x patch_len]
+        x = self.linear(self.dropout(x))  # [bs x num_fcst x patch_len*output_dim]
+        x = x.view(x.size(0), x.size(1), -1, self.output_dim)  # [bs x num_fcst x patch_len x output_dim]
         return x

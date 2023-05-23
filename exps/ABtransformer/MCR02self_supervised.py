@@ -92,16 +92,16 @@ else:
     print('No GPU available, using the CPU instead.')
 
 #%% Prepare data
-args.dset = 'seoul'
-args.subsample = True
+args.dset = 'guangzhou'
+args.subsample = False
 args.n_epochs = 20
 args.d_model = 128
 args.n_heads = 8
 args.n_layers = 3
-args.loss = 'rmse'
+args.loss = 'gaussian_nll'  # one of (quantile1, quantile3, quantile5, rmse, mae, gaussian_nll)
 args.max_lr = 0.001
 args.standardization = 'zscore'
-args.attn_mask_type = 'strict'
+args.attn_mask_type = 'none'
 args.pre_norm = True
 args.pe = 'zeros'
 args.learn_pe = True
@@ -186,7 +186,7 @@ def train_MetroTransformer(args, train_loader, val_loader):
     epoch_loss = []
     lrs = []
     best_val_loss = np.inf
-    patience = 8  # Number of epochs with no improvement after which training will be stopped
+    patience = 5  # Number of epochs with no improvement after which training will be stopped
     epochs_no_improve = 0
     for epoch in range(args.n_epochs):
         model.train()
@@ -207,25 +207,29 @@ def train_MetroTransformer(args, train_loader, val_loader):
 
         # Calculate validation loss
         model.eval()
-        val_loss = []
+        val_loss_intrain = []  # the validation loss used for early stopping
+        val_loss = []  # the validation loss used for comparison with other models, rmse
         for i, (inputs, target) in enumerate(val_loader):
             inputs = [input.to(device) for input in inputs]
             target = target.to(device)
             output = model(inputs)
             loss = criterion(output, target)
-            val_loss.append(loss.item())
-        print(f'Epoch [{epoch}/{args.n_epochs}], Val Loss: {np.mean(val_loss):.4f} \t Train Loss: {epoch_loss[-1]:.4f} '
-              f'\t total time: {time.time() - script_start_time:.2f}')
-        best_val_loss = min(best_val_loss, np.mean(val_loss))
+            val_loss_intrain.append(loss.item())
+            val_loss.append(rmse_loss(output, target).item())
+
+        print(f'Epoch [{epoch}/{args.n_epochs}], Val Loss: {np.mean(val_loss_intrain):.4f} '
+              f'\t Train Loss: {epoch_loss[-1]:.4f} \t total time: {time.time() - script_start_time:.2f}')
+        best_val_loss = min(best_val_loss, np.mean(val_loss_intrain))
         fig1 = exam_attention(t='2017-07-29 20:00:00', s = 110, model=model, dataset=train_dataset, args=args,
                               layer=args.n_layers-1, loc=76)
         fig2 = exam_attention(t='2017-07-29 20:00:00', s = 33, model=model, dataset=train_dataset, args=args,
                               layer=args.n_layers-1, loc=77)
-        wandb.log({'train_loss': epoch_loss[-1], 'val_loss': np.mean(val_loss), 'lr': scheduler.get_last_lr()[0], 'epoch': epoch,
+        wandb.log({'train_loss': epoch_loss[-1], 'val_loss_intrain': np.mean(val_loss_intrain),
+                   'val_loss': np.mean(val_loss), 'lr': scheduler.get_last_lr()[0], 'epoch': epoch,
                    "station 110 train": wandb.Image(fig1), "station 33 train": wandb.Image(fig2)})
 
         # Save the current best model
-        if np.mean(val_loss) == best_val_loss:
+        if np.mean(val_loss_intrain) == best_val_loss:
             torch.save(model.state_dict(), f'log//{args.name}.pth')
             epochs_no_improve = 0
         else:
