@@ -10,11 +10,11 @@ import os
 cwd = os.getcwd()
 # extend the path to the parent directory to import the modules under the parent directory
 sys.path.append(os.path.dirname(os.path.dirname(cwd)))
+from utilities.basics import *
+from utilities.loss import *
 from datasets.datautils import *
 from models.MetroTransformer_v import MetroTransformer_v
 from utilities.lr_finder import LRFinder
-from utilities.basics import *
-from utilities.loss import *
 import argparse
 
 #%% Define the default arguments
@@ -29,6 +29,7 @@ parser.add_argument('--max_run_time', type=int, default=10, help='maximum runnin
 # Dataset and dataloader
 parser.add_argument('--dset', type=str, default='seoul', help='dataset name seoul')
 parser.add_argument('--subsample', type=bool, default=False, help='Whether to subsample the dataset for quick test')
+parser.add_argument('--datatype', type=str, default='concat', help='one of seq, concat')
 parser.add_argument('--t_resolution', type=str, default='10T', help='the time resolution for resampling')
 parser.add_argument('--patch_len', type=int, default=6, help='patch length')
 parser.add_argument('--stride', type=int, default=6, help='stride between patch')
@@ -102,6 +103,7 @@ else:
     print('No GPU available, using the CPU instead.')
 
 #%% Prepare data
+args.dset = "guangzhou"
 if args.dset == "guangzhou":
     args.data_path = '../../../data/GuangzhouMetro//'
 if args.dset == "seoul":
@@ -135,15 +137,16 @@ reset_random_seeds(args.seed)
 
 data = read_data(args)
 data = detect_anomaly(data, args)
-train_data, val_data, test_data = split_train_val_test(data, args)
-train_dataset = MetroDataset_v(train_data, data_mask_method, args)
-val_dataset = MetroDataset_v(val_data, 'target', args)
-test_dataset = MetroDataset_v(test_data, 'target', args)
+dataset = MetroDataset_total(data, args, datatype=args.datatype)
+train_dataset = dataset.TrainDataset
+val_dataset = dataset.ValDataset
+test_dataset = dataset.TestDataset
+train_dataset.mask_method = args.data_mask_method; train_dataset.mask_ratio = args.data_mask_ratio
 train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, pin_memory=True)
 val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, pin_memory=True)
 test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False)
 
-
+train_data = train_dataset.data.loc[train_dataset.f_index, :]
 if args.standardization == 'iqr':
     x_loc = train_data.groupby('station')['inflow'].median().values
     x_scale = (train_data.groupby('station')['inflow'].quantile(0.75) - train_data.groupby('station')['inflow'].quantile(0.25)).values
@@ -157,6 +160,7 @@ else:
     raise ValueError('standardization not supported')
 x_loc = torch.tensor(x_loc, dtype=torch.float32).to(device)
 x_scale = torch.tensor(x_scale, dtype=torch.float32).to(device)
+x, y  = next(iter(train_loader))
 
 #%% Main experiments
 import wandb
@@ -283,3 +287,23 @@ def train_MetroTransformer(args, train_loader, val_loader):
     return model
 
 model = train_MetroTransformer(args, train_loader, val_loader)
+
+#%% Evaluate the model on the test set
+test_dataset.mode = 'normal'
+test_loader = DataLoader(test_dataset)
+normal_test_mae, normal_test_rmse = evaluate(model, test_loader, device=device)
+wandb.log({'normal_test_mae': normal_test_mae, 'normal_test_rmse': normal_test_rmse})
+
+test_dataset.mode = 'abnormal'
+test_loader = DataLoader(test_dataset)
+abnormal_test_mae, abnormal_test_rmse = evaluate(model, test_loader, device=device)
+wandb.log({'abnormal_test_mae': abnormal_test_mae, 'abnormal_test_rmse': abnormal_test_rmse})
+
+total_test_mae = (normal_test_mae * len(test_dataset.normal_index) +
+                  abnormal_test_mae * len(test_dataset.abnormal_index)) \
+                 / len(test_dataset.f_index)
+total_test_rmse = ((normal_test_rmse**2 * len(test_dataset.normal_index) +
+                    abnormal_test_rmse**2 * len(test_dataset.abnormal_index))
+                   / len(test_dataset.f_index))**0.5
+wandb.log({'total_test_mae': total_test_mae, 'total_test_rmse': total_test_rmse})
+wandb.finish()

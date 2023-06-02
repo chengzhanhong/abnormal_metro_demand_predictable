@@ -62,15 +62,16 @@ def evaluate(model, test_loader, device='cpu'):
     test_mae, test_rmse
     """
     test_mae = 0
-    test_rmse = 0
+    test_mse = 0
     model.eval()
+    len_data = len(test_loader.dataset)
     with torch.no_grad():
         for x,y in test_loader:
+            len_batch = len(x[0])
             x = [xx.to(device) for xx in x]
             y = y.to(device)
             y_hat = model(x)
-            test_mae += mae_loss(y_hat, y).item()
-            test_rmse += rmse_loss(y_hat, y).item()
-        test_mae /= len(test_loader)
-        test_rmse /= len(test_loader)
+            test_mae += mae_loss(y_hat, y).item() * len_batch / len_data
+            test_mse += rmse_loss(y_hat, y).item()**2 * len_batch / len_data
+        test_rmse = test_mse**0.5
     return test_mae, test_rmse

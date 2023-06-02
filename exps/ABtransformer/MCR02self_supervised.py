@@ -7,11 +7,11 @@ import os
 cwd = os.getcwd()
 # extend the path to the parent directory to import the modules under the parent directory
 sys.path.append(os.path.dirname(os.path.dirname(cwd)))
+from utilities.basics import *
+from utilities.loss import *
 from datasets.datautils import *
 from models.MetroTransformer import MetroTransformer
 from utilities.lr_finder import LRFinder
-from utilities.basics import *
-from utilities.loss import *
 import argparse
 
 #%% Define the default arguments
@@ -19,13 +19,14 @@ parser = argparse.ArgumentParser()
 # General
 parser.add_argument('--default_float', type=str, default='float32', help='default float type')
 parser.add_argument('--default_int', type=str, default='int32', help='default int type')
-parser.add_argument('--task', type=str, default='supervised', help='one of supervised, unsupervised, finetune')
+# parser.add_argument('--task', type=str, default='supervised', help='one of supervised, unsupervised, finetune')
 parser.add_argument('--seed', type=int, default=1, help='random seed')
 parser.add_argument('--max_run_time', type=int, default=10, help='maximum running time in hours')
 
 # Dataset and dataloader
 parser.add_argument('--dset', type=str, default='guangzhou', help='dataset name, guangzhou or nyc or seoul')
 parser.add_argument('--subsample', type=bool, default=False, help='Whether to subsample the dataset for quick test')
+parser.add_argument('--datatype', type=str, default='seq', help='one of seq, concat')
 parser.add_argument('--data_mask_method', type=str, default='target', help='one of (target, both)')
 parser.add_argument('--data_mask_ratio', type=float, default=0.2, help='the ratio of masked data in context')
 parser.add_argument('--train_r', type=float, default=0.8, help='the ratio of training data')
@@ -94,11 +95,11 @@ else:
 #%% Prepare data
 args.dset = 'guangzhou'
 args.subsample = False
-args.n_epochs = 20
+args.n_epochs = 2
 args.d_model = 128
 args.n_heads = 8
 args.n_layers = 3
-args.loss = 'gaussian_nll'  # one of (quantile1, quantile3, quantile5, rmse, mae, gaussian_nll)
+args.loss = 'rmse'  # one of (quantile1, quantile3, quantile5, rmse, mae, gaussian_nll)
 args.max_lr = 0.001
 args.standardization = 'zscore'
 args.attn_mask_type = 'none'
@@ -119,15 +120,16 @@ reset_random_seeds(args.seed)
 
 data = read_data(args)
 data = detect_anomaly(data, args)
-train_data, val_data, test_data = split_train_val_test(data, args)
-train_dataset = MetroDataset(train_data, data_mask_method, args)
-val_dataset = MetroDataset(val_data, 'target', args)
-test_dataset = MetroDataset(test_data, 'target', args)
+dataset = MetroDataset_total(data, args, datatype=args.datatype)
+train_dataset = dataset.TrainDataset
+val_dataset = dataset.ValDataset
+test_dataset = dataset.TestDataset
+train_dataset.mask_method = args.data_mask_method; train_dataset.mask_ratio = args.data_mask_ratio
 train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, pin_memory=True)
 val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, pin_memory=True)
 test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False)
 
-
+train_data = train_dataset.data.loc[train_dataset.f_index, :]
 if args.standardization == 'iqr':
     x_loc = train_data.groupby('station')['inflow'].median().values
     x_scale = (train_data.groupby('station')['inflow'].quantile(0.75) - train_data.groupby('station')['inflow'].quantile(0.25)).values
@@ -142,6 +144,13 @@ else:
 x_loc = torch.asarray(x_loc, dtype=torch.float32).to(device)
 x_scale = torch.asarray(x_scale, dtype=torch.float32).to(device)
 
+# x, y = next(train_loader.__iter__())
+# train_dataset.mode
+# len(train_dataset)
+# train_dataset.mode = 'abnormal'
+# len(train_dataset)
+# train_dataset.mode = 'normal'
+# len(train_dataset)
 #%% Main experiments
 import wandb
 def train_MetroTransformer(args, train_loader, val_loader):
@@ -177,7 +186,11 @@ def train_MetroTransformer(args, train_loader, val_loader):
     run = wandb.init(project='MetroTransformer', config=dict(args._get_kwargs()), reinit=True, mode=mode)
     # wandb.log({'lr_finder': wandb.Image(fig)})
 
+    import datetime
+    now = datetime.datetime.now()
+    wandb.run.name = f'{now.month}_{now.day}_{now.hour}_{args.dset}_ABT'
     args.name = run.name
+
     # learning rate scheduler
     scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=args.max_lr, steps_per_epoch=len(train_loader),
                                                     epochs=args.n_epochs, pct_start=1/args.n_epochs,
@@ -220,9 +233,9 @@ def train_MetroTransformer(args, train_loader, val_loader):
         print(f'Epoch [{epoch}/{args.n_epochs}], Val Loss: {np.mean(val_loss_intrain):.4f} '
               f'\t Train Loss: {epoch_loss[-1]:.4f} \t total time: {time.time() - script_start_time:.2f}')
         best_val_loss = min(best_val_loss, np.mean(val_loss_intrain))
-        fig1 = exam_attention(t='2017-07-29 20:00:00', s = 110, model=model, dataset=train_dataset, args=args,
+        fig1 = exam_attention(t='2017-07-29 20:00:00', s = 110, model=model, dataset=dataset, args=args,
                               layer=args.n_layers-1, loc=76)
-        fig2 = exam_attention(t='2017-07-29 20:00:00', s = 33, model=model, dataset=train_dataset, args=args,
+        fig2 = exam_attention(t='2017-07-29 20:00:00', s = 33, model=model, dataset=dataset, args=args,
                               layer=args.n_layers-1, loc=77)
         wandb.log({'train_loss': epoch_loss[-1], 'val_loss_intrain': np.mean(val_loss_intrain),
                    'val_loss': np.mean(val_loss), 'lr': scheduler.get_last_lr()[0], 'epoch': epoch,
@@ -243,6 +256,9 @@ def train_MetroTransformer(args, train_loader, val_loader):
     # Load the best model
     model.load_state_dict(torch.load(f'log//{args.name}.pth'))
 
+    # Evaluate the model
+
+
     # Log the training loss
     fig, ax = plt.subplots()
     ax.plot(step_loss)
@@ -256,7 +272,27 @@ def train_MetroTransformer(args, train_loader, val_loader):
     ax2.set_xlabel('Step')
     ax2.set_ylabel('Learning rate')
     wandb.log({"step_learning_rate": wandb.Image(fig2)})
-    wandb.finish()
     return model
 
 model = train_MetroTransformer(args, train_loader, val_loader)
+
+#%% Evaluate the model on the test set
+test_dataset.mode = 'normal'
+test_loader = DataLoader(test_dataset)
+normal_test_mae, normal_test_rmse = evaluate(model, test_loader, device=device)
+wandb.log({'normal_test_mae': normal_test_mae, 'normal_test_rmse': normal_test_rmse})
+
+test_dataset.mode = 'abnormal'
+test_loader = DataLoader(test_dataset)
+abnormal_test_mae, abnormal_test_rmse = evaluate(model, test_loader, device=device)
+wandb.log({'abnormal_test_mae': abnormal_test_mae, 'abnormal_test_rmse': abnormal_test_rmse})
+
+total_test_mae = (normal_test_mae * len(test_dataset.normal_index) +
+                  abnormal_test_mae * len(test_dataset.abnormal_index)) \
+                 / len(test_dataset.f_index)
+total_test_rmse = ((normal_test_rmse**2 * len(test_dataset.normal_index) +
+                    abnormal_test_rmse**2 * len(test_dataset.abnormal_index))
+                   / len(test_dataset.f_index))**0.5
+wandb.log({'total_test_mae': total_test_mae, 'total_test_rmse': total_test_rmse})
+wandb.finish()
+

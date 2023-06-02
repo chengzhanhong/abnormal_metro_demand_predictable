@@ -1,17 +1,10 @@
 import os
-import random
 import numpy as np
 import torch
 import argparse
 import pandas as pd
 from matplotlib import pyplot as plt
 
-def reset_random_seeds(n=1):
-    os.environ['PYTHONHASHSEED'] = str(n)
-    # tf.random.set_seed(n)
-    torch.random.manual_seed(n)
-    np.random.seed(n)
-    random.seed(n)
 
 def get_wandb_args(path):
     import wandb

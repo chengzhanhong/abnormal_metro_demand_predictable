@@ -81,7 +81,7 @@ class MetroTransformer(nn.Module):
         #     z[fcst_loc==1] = 0
 
         z = self.backbone(z, features, self.attn_mask)  # z: [bs x (num_patch+num_target_patch) x d_model]
-        z = self.head(z, fcst_loc)  # z: [bs x num_fcst x patch_len, output_dim]
+        z = self.head(z, fcst_loc)  # z: [bs x num_fcst x patch_len x output_dim]
 
         if self.loss == 'gaussian_nll':
             z_clone = z[:, :, :, 0].clone()
@@ -302,3 +302,27 @@ class ForecastHead(nn.Module):
         x = self.linear(self.dropout(x))  # [bs x num_fcst x patch_len*output_dim]
         x = x.view(x.size(0), x.size(1), -1, self.output_dim)  # [bs x num_fcst x patch_len x output_dim]
         return x
+
+
+class PatchTSTHead(nn.Module):
+    """The head for the PatchTST model"""
+    def __init__(self, d_model, patch_len, num_patch, num_target_patch, dropout):
+        super().__init__()
+        self.patch_len = patch_len
+        self.num_patch = num_patch
+        self.num_target_patch = num_target_patch
+        self.dropout = nn.Dropout(dropout)
+        self.linear = nn.Linear(d_model*num_patch, patch_len*num_target_patch)
+        self.flatten = nn.Flatten(start_dim=-2)
+
+    def foward(self, x):
+        """
+        x: [bs x d_model*num_patch]
+        output: [bs x num_target_patch x patch_len]
+        """
+        x = self.flatten(x)  # [bs x d_model*num_patch]
+        x = self.linear(self.dropout(x))  # [bs x patch_len*num_target_patch]
+        x = x.view(x.size(0), self.num_target_patch, self.patch_len)  # [bs x num_target_patch x patch_len]
+        return x
+
+
