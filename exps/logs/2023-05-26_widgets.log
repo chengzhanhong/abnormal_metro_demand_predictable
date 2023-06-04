@@ -1,0 +1,80 @@
+05-26 06:31:53:823 - INFO - {__init__.py:88} Creating logs/2023-05-26_widgets.log file
+05-26 06:52:45:359 - INFO - {__init__.py:88} Creating logs/2023-05-26_widgets.log file
+05-26 06:55:18:91 - INFO - {__init__.py:88} Creating logs/2023-05-26_widgets.log file
+05-26 06:55:43:503 - INFO - {__init__.py:88} Creating logs/2023-05-26_widgets.log file
+05-26 07:49:41:392 - INFO - {__init__.py:88} Creating logs/2023-05-26_widgets.log file
+05-26 07:50:14:260 - INFO - {__init__.py:88} Creating logs/2023-05-26_widgets.log file
+05-26 07:50:47:865 - INFO - {__init__.py:88} Creating logs/2023-05-26_widgets.log file
+05-26 07:50:48:581 - DEBUG - {connectionpool.py:228} Starting new HTTP connection (1): 127.0.0.1:12345
+05-26 07:50:50:860 - INFO - {core.py:89} Entering _create method
+05-26 07:50:50:860 - INFO - {core.py:98} Sending request http://127.0.0.1:8080//services/nbeats_timeseries
+05-26 07:50:50:863 - DEBUG - {connectionpool.py:228} Starting new HTTP connection (1): 127.0.0.1:8080
+05-26 07:51:28:7 - INFO - {__init__.py:88} Creating logs/2023-05-26_widgets.log file
+05-26 07:51:28:699 - DEBUG - {connectionpool.py:228} Starting new HTTP connection (1): localhost:12345
+05-26 07:51:33:45 - INFO - {core.py:89} Entering _create method
+05-26 07:51:33:46 - INFO - {core.py:98} Sending request http://localhost:1234//services/nbeats_timeseries
+05-26 07:51:33:49 - DEBUG - {connectionpool.py:228} Starting new HTTP connection (1): localhost:1234
+05-26 07:58:39:408 - INFO - {__init__.py:88} Creating logs/2023-05-26_widgets.log file
+05-26 07:58:40:106 - DEBUG - {connectionpool.py:228} Starting new HTTP connection (1): 127.0.0.1:12345
+05-26 07:58:42:390 - INFO - {core.py:89} Entering _create method
+05-26 07:58:42:391 - INFO - {core.py:98} Sending request http://127.0.0.1:222//services/nbeats_timeseries
+05-26 07:58:42:393 - DEBUG - {connectionpool.py:228} Starting new HTTP connection (1): 127.0.0.1:222
+05-26 07:59:52:980 - INFO - {__init__.py:88} Creating logs/2023-05-26_widgets.log file
+05-26 07:59:53:677 - DEBUG - {connectionpool.py:228} Starting new HTTP connection (1): 127.0.0.1:12345
+05-26 08:00:01:906 - INFO - {core.py:159} Start training phase: {
+  "service": "nbeats_timeseries",
+  "async": true,
+  "parameters": {
+    "input": {
+      "shuffle": true,
+      "separator": ",",
+      "db": false,
+      "scale": true,
+      "offset": 1
+    },
+    "mllib": {
+      "gpu": true,
+      "gpuid": 0,
+      "resume": false,
+      "net": {
+        "batch_size": 100,
+        "test_batch_size": 100
+      },
+      "solver": {
+        "iterations": 100000,
+        "test_interval": 5000,
+        "snapshot": 5000,
+        "base_lr": 0.001,
+        "solver_type": "RANGER_PLUS",
+        "sam": false,
+        "test_initialization": false
+      }
+    },
+    "output": {
+      "measure": [
+        "L1"
+      ]
+    }
+  },
+  "data": [
+    "",
+    ""
+  ]
+}
+05-26 08:00:01:910 - DEBUG - {connectionpool.py:228} Starting new HTTP connection (1): 127.0.0.1:222
+05-26 08:08:18:746 - INFO - {__init__.py:88} Creating logs/2023-05-26_widgets.log file
+05-26 08:08:19:438 - DEBUG - {connectionpool.py:228} Starting new HTTP connection (1): 127.0.0.1:12345
+05-26 08:08:21:729 - INFO - {core.py:89} Entering _create method
+05-26 08:08:21:730 - INFO - {core.py:98} Sending request http://127.0.0.1:222//services/nbeats_timeseries
+05-26 08:08:21:732 - DEBUG - {connectionpool.py:228} Starting new HTTP connection (1): 127.0.0.1:222
+05-26 08:20:53:239 - INFO - {__init__.py:88} Creating logs/2023-05-26_widgets.log file
+05-26 08:25:26:297 - INFO - {__init__.py:88} Creating logs/2023-05-26_widgets.log file
+05-26 08:25:36:182 - DEBUG - {connectionpool.py:228} Starting new HTTP connection (1): 127.0.0.1:12345
+05-26 08:25:38:455 - INFO - {core.py:89} Entering _create method
+05-26 08:25:38:455 - INFO - {core.py:98} Sending request http://127.0.0.1:57759//services/nbeats_timeseries
+05-26 08:25:38:458 - DEBUG - {connectionpool.py:228} Starting new HTTP connection (1): 127.0.0.1:57759
+05-26 08:36:16:682 - INFO - {__init__.py:88} Creating logs/2023-05-26_widgets.log file
+05-26 08:36:17:407 - DEBUG - {connectionpool.py:228} Starting new HTTP connection (1): 127.0.0.1:12345
+05-26 08:36:25:499 - INFO - {core.py:89} Entering _create method
+05-26 08:36:25:499 - INFO - {core.py:98} Sending request http://127.0.0.1:57759//services/nbeats_timeseries
+05-26 08:36:25:502 - DEBUG - {connectionpool.py:228} Starting new HTTP connection (1): 127.0.0.1:57759
