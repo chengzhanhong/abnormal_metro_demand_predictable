@@ -183,7 +183,7 @@ def train_MetroTransformer(args, train_loader, val_loader):
         mode = 'disabled'
     else:
         mode = 'online'
-    run = wandb.init(project='MetroTransformer', config=dict(args._get_kwargs()), reinit=True, mode='disabled')
+    run = wandb.init(project='MetroTransformer', config=dict(args._get_kwargs()), reinit=True, mode='online')
     # wandb.log({'lr_finder': wandb.Image(fig)})
     import datetime
     now = str(datetime.datetime.now().day) + str(datetime.datetime.now().hour)
@@ -240,7 +240,7 @@ def train_MetroTransformer(args, train_loader, val_loader):
 
         # Save the current best model
         if np.mean(val_loss) == best_val_loss:
-            torch.save(model.state_dict(), f'../../log//{args.name}.pth')
+            torch.save(model.state_dict(), f'../logs//{args.name}.pth')
             epochs_no_improve = 0
         else:
             epochs_no_improve += 1
@@ -252,7 +252,7 @@ def train_MetroTransformer(args, train_loader, val_loader):
             break
     # Load the best model
     try:
-        model.load_state_dict(torch.load(f'../../log//{args.name}.pth'))
+        model.load_state_dict(torch.load(f'../../logs//{args.name}.pth'))
     except:
         pass
 
@@ -269,7 +269,7 @@ def train_MetroTransformer(args, train_loader, val_loader):
     ax2.set_xlabel('Step')
     ax2.set_ylabel('Learning rate')
     wandb.log({"step_learning_rate": wandb.Image(fig2)})
-    wandb.finish()
+    # wandb.finish()
     return model
 
 

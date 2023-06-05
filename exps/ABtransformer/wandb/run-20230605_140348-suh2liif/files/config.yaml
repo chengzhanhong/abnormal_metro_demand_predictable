@@ -1,0 +1,197 @@
+wandb_version: 1
+
+activation:
+  desc: null
+  value: gelu
+anneal_strategy:
+  desc: null
+  value: linear
+attn_dropout:
+  desc: null
+  value: 0.2
+attn_mask_type:
+  desc: null
+  value: none
+batch_size:
+  desc: null
+  value: 128
+context_len:
+  desc: null
+  value: 108
+d_ff:
+  desc: null
+  value: 256
+d_model:
+  desc: null
+  value: 128
+data_mask_method:
+  desc: null
+  value: both
+data_mask_ratio:
+  desc: null
+  value: 0.2
+data_path:
+  desc: null
+  value: ../../../data/GuangzhouMetro//
+datatype:
+  desc: null
+  value: concat
+default_float:
+  desc: null
+  value: float32
+default_int:
+  desc: null
+  value: int32
+dropout:
+  desc: null
+  value: 0.2
+dset:
+  desc: null
+  value: guangzhou
+end_minute:
+  desc: null
+  value: 1440
+flow_diff_r:
+  desc: null
+  value: 0.4
+flow_eb:
+  desc: null
+  value: true
+head_dropout:
+  desc: null
+  value: 0
+inflow_file:
+  desc: null
+  value: inflow7_9.csv
+learn_pe:
+  desc: null
+  value: true
+loss:
+  desc: null
+  value: rmse
+max_lr:
+  desc: null
+  value: 0.001
+max_run_time:
+  desc: null
+  value: 10
+n_epochs:
+  desc: null
+  value: 2
+n_heads:
+  desc: null
+  value: 8
+n_layers:
+  desc: null
+  value: 3
+norm:
+  desc: null
+  value: LayerNorm
+num_embeds:
+  desc: null
+  value:
+  - 2
+  - 159
+  - 7
+  - 36
+num_patch:
+  desc: null
+  value: 36
+num_target_patch:
+  desc: null
+  value: 12
+outflow_file:
+  desc: null
+  value: outflow7_9.csv
+patch_len:
+  desc: null
+  value: 3
+pe:
+  desc: null
+  value: zeros
+pre_norm:
+  desc: null
+  value: true
+prominence:
+  desc: null
+  value: 300
+seed:
+  desc: null
+  value: 1
+standardization:
+  desc: null
+  value: zscore
+start_minute:
+  desc: null
+  value: 360
+station_eb:
+  desc: null
+  value: true
+store_attn:
+  desc: null
+  value: true
+stride:
+  desc: null
+  value: 3
+subsample:
+  desc: null
+  value: false
+subsample_end:
+  desc: null
+  value: '2017-07-20'
+subsample_start:
+  desc: null
+  value: '2017-07-01'
+t_resolution:
+  desc: null
+  value: 10T
+target_len:
+  desc: null
+  value: 36
+test_r:
+  desc: null
+  value: 0.1
+time_eb:
+  desc: null
+  value: true
+torch_int:
+  desc: null
+  value: torch.int32
+train_r:
+  desc: null
+  value: 0.8
+val_r:
+  desc: null
+  value: 0.1
+weekday_eb:
+  desc: null
+  value: true
+_wandb:
+  desc: null
+  value:
+    python_version: 3.8.1
+    cli_version: 0.15.0
+    framework: torch
+    is_jupyter_run: false
+    is_kaggle_kernel: false
+    start_time: 1685988228.093949
+    t:
+      1:
+      - 1
+      - 51
+      - 55
+      2:
+      - 1
+      - 51
+      - 55
+      3:
+      - 2
+      - 16
+      - 17
+      - 23
+      - 37
+      4: 3.8.1
+      5: 0.15.0
+      8:
+      - 3
+      - 5

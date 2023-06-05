@@ -1,0 +1,27 @@
+2023-06-05 14:35:25,895 INFO    MainThread:13296 [wandb_setup.py:_flush():76] Configure stats pid to 13296
+2023-06-05 14:35:25,895 INFO    MainThread:13296 [wandb_setup.py:_flush():76] Loading settings from C:\Users\jwang317\.config\wandb\settings
+2023-06-05 14:35:25,896 INFO    MainThread:13296 [wandb_setup.py:_flush():76] Loading settings from G:\Work\mcgill\metro\forecastable\exps\ABtransformer\wandb\settings
+2023-06-05 14:35:25,896 INFO    MainThread:13296 [wandb_setup.py:_flush():76] Loading settings from environment variables: {}
+2023-06-05 14:35:25,896 INFO    MainThread:13296 [wandb_setup.py:_flush():76] Inferring run settings from compute environment: {'program_relpath': 'exps\\ABtransformer\\MCR02self_supervised_v.py', 'program': 'G:/Work/mcgill/metro/forecastable/exps/ABtransformer/MCR02self_supervised_v.py'}
+2023-06-05 14:35:25,897 INFO    MainThread:13296 [wandb_setup.py:_flush():76] Applying login settings: {'api_key': '***REDACTED***'}
+2023-06-05 14:35:25,897 INFO    MainThread:13296 [wandb_setup.py:_flush():76] Applying login settings: {'api_key': '***REDACTED***'}
+2023-06-05 14:35:25,897 INFO    MainThread:13296 [wandb_init.py:_log_setup():507] Logging user logs to G:\Work\mcgill\metro\forecastable\exps\ABtransformer\wandb\run-20230605_143525-kc1ldl15\logs\debug.log
+2023-06-05 14:35:25,897 INFO    MainThread:13296 [wandb_init.py:_log_setup():508] Logging internal logs to G:\Work\mcgill\metro\forecastable\exps\ABtransformer\wandb\run-20230605_143525-kc1ldl15\logs\debug-internal.log
+2023-06-05 14:35:25,898 INFO    MainThread:13296 [wandb_init.py:init():547] calling init triggers
+2023-06-05 14:35:25,898 INFO    MainThread:13296 [wandb_init.py:init():554] wandb.init called with sweep_config: {}
+config: {'activation': 'gelu', 'anneal_strategy': 'linear', 'attn_dropout': 0.2, 'attn_mask_type': 'none', 'batch_size': 128, 'context_len': 108, 'd_ff': 256, 'd_model': 128, 'data_mask_method': 'both', 'data_mask_ratio': 0.2, 'data_path': '../../../data/GuangzhouMetro//', 'datatype': 'concat', 'default_float': 'float32', 'default_int': 'int32', 'dropout': 0.2, 'dset': 'guangzhou', 'end_minute': 1440, 'flow_diff_r': 0.4, 'flow_eb': True, 'head_dropout': 0, 'inflow_file': 'inflow7_9.csv', 'learn_pe': True, 'loss': 'rmse', 'max_lr': 0.001, 'max_run_time': 10, 'n_epochs': 2, 'n_heads': 8, 'n_layers': 3, 'norm': 'LayerNorm', 'num_embeds': (2, 159, 7, 36), 'num_patch': 36, 'num_target_patch': 12, 'outflow_file': 'outflow7_9.csv', 'patch_len': 3, 'pe': 'zeros', 'pre_norm': True, 'prominence': 300, 'seed': 1, 'standardization': 'zscore', 'start_minute': 360, 'station_eb': True, 'store_attn': True, 'stride': 3, 'subsample': False, 'subsample_end': '2017-07-20', 'subsample_start': '2017-07-01', 't_resolution': '10T', 'target_len': 36, 'test_r': 0.1, 'time_eb': True, 'torch_int': torch.int32, 'train_r': 0.8, 'val_r': 0.1, 'weekday_eb': True}
+2023-06-05 14:35:25,898 INFO    MainThread:13296 [wandb_init.py:init():595] starting backend
+2023-06-05 14:35:25,898 INFO    MainThread:13296 [wandb_init.py:init():599] setting up manager
+2023-06-05 14:35:25,901 INFO    MainThread:13296 [backend.py:_multiprocessing_setup():106] multiprocessing start_methods=spawn, using: spawn
+2023-06-05 14:35:25,905 INFO    MainThread:13296 [wandb_init.py:init():605] backend started and connected
+2023-06-05 14:35:25,908 INFO    MainThread:13296 [wandb_init.py:init():695] updated telemetry
+2023-06-05 14:35:26,397 INFO    MainThread:13296 [wandb_init.py:init():732] communicating run to backend with 60.0 second timeout
+2023-06-05 14:35:26,865 INFO    MainThread:13296 [wandb_run.py:_on_init():2176] communicating current version
+2023-06-05 14:35:26,914 INFO    MainThread:13296 [wandb_run.py:_on_init():2185] got version response upgrade_message: "wandb version 0.15.3 is available!  To upgrade, please run:\n $ pip install wandb --upgrade"
+
+2023-06-05 14:35:26,914 INFO    MainThread:13296 [wandb_init.py:init():782] starting run threads in backend
+2023-06-05 14:35:27,753 INFO    MainThread:13296 [wandb_run.py:_console_start():2157] atexit reg
+2023-06-05 14:35:27,753 INFO    MainThread:13296 [wandb_run.py:_redirect():2012] redirect: SettingsConsole.WRAP_RAW
+2023-06-05 14:35:27,753 INFO    MainThread:13296 [wandb_run.py:_redirect():2077] Wrapping output streams.
+2023-06-05 14:35:27,753 INFO    MainThread:13296 [wandb_run.py:_redirect():2102] Redirects installed.
+2023-06-05 14:35:27,755 INFO    MainThread:13296 [wandb_init.py:init():824] run started, returning control to user process

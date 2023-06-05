@@ -3,38 +3,32 @@
 # Prior att Mask is set to None
 # Three flow types setting for patches: complete in-out flow batch, inflow masked batch, inflow to predict batch
 import time
-
 script_start_time = time.time()
 
 import sys
 import os
-
 cwd = os.getcwd()
 # extend the path to the parent directory to import the modules under the parent directory
 sys.path.append(os.path.dirname(os.path.dirname(cwd)))
-from datasets.datautils import *
 from utilities.basics import *
 from utilities.loss import *
+from datasets.datautils import *
+from utilities.lr_finder import LRFinder
 import argparse
 
-# %% Define the default arguments
+#%% Define the default arguments
 parser = argparse.ArgumentParser()
 # General
 parser.add_argument('--default_float', type=str, default='float32', help='default float type')
 parser.add_argument('--default_int', type=str, default='int32', help='default int type')
-parser.add_argument('--task', type=str, default='supervised', help='one of supervised, unsupervised, finetune')
+# parser.add_argument('--task', type=str, default='supervised', help='one of supervised, unsupervised, finetune')
 parser.add_argument('--seed', type=int, default=1, help='random seed')
 parser.add_argument('--max_run_time', type=int, default=10, help='maximum running time in hours')
 
 # Dataset and dataloader
-parser.add_argument('--dset', type=str, default='guangzhou', help='dataset name guangzhou seoul')
+parser.add_argument('--dset', type=str, default='guangzhou', help='dataset name, guangzhou or nyc or seoul')
 parser.add_argument('--subsample', type=bool, default=False, help='Whether to subsample the dataset for quick test')
-parser.add_argument('--t_resolution', type=str, default='10T', help='the time resolution for resampling')
-parser.add_argument('--patch_len', type=int, default=6, help='patch length')
-parser.add_argument('--stride', type=int, default=6, help='stride between patch')
-parser.add_argument('--num_patch', type=int, default=18, help='number of patches for boarding/alighting flow')
-parser.add_argument('--target_len', type=int, default=36, help='forecast horizon for supervised learning, ')
-parser.add_argument('--input_len', type=int, default=48, help='input horizon for NBEATS')
+parser.add_argument('--datatype', type=str, default='concat', help='one of seq, concat')
 parser.add_argument('--data_mask_method', type=str, default='target', help='one of (target, both)')
 parser.add_argument('--data_mask_ratio', type=float, default=0.2, help='the ratio of masked data in context')
 parser.add_argument('--train_r', type=float, default=0.8, help='the ratio of training data')
@@ -44,6 +38,7 @@ parser.add_argument('--batch_size', type=int, default=128, help='batch size')
 parser.add_argument('--flow_diff_r', type=float, default=0.4, help='the maximum possible ratio of in-out flow '
                                                                    'difference of a day, used to remove outliers')
 parser.add_argument('--standardization', type=str, default='iqr', help='one of (iqr, zscore, minmax)')
+
 
 # Model args
 parser.add_argument('--n_layers', type=int, default=3, help='number of Transformer layers')
@@ -62,13 +57,12 @@ parser.add_argument('--max_lr', type=float, default=1e-3, help='maximum learning
 # positional encoding and feature embedding
 parser.add_argument('--pe', type=str, default='zeros', help='type of position encoding (zeros, sincos, or none)')
 parser.add_argument('--learn_pe', type=bool, default=True, help='learn position encoding')
-parser.add_argument('--flow_eb', type=bool, default=True,
-                    help='whether to use flow embedding (inflow and outflow) or not.')
+parser.add_argument('--flow_eb', type=bool, default=True, help='whether to use flow embedding (inflow and outflow) or not.')
 parser.add_argument('--station_eb', type=bool, default=True, help='whether to use station embedding or not.')
 parser.add_argument('--weekday_eb', type=bool, default=True, help='whether to use weekday embedding or not.')
 parser.add_argument('--time_eb', type=bool, default=True, help='whether to use time embedding or not.')
 parser.add_argument('--attn_mask_type', type=str, default='none', help='the type of attention mask, one of none, '
-                                                                       'strict, boarding, cross')
+                                                                  'strict, boarding, cross')
 
 # Optimization args
 parser.add_argument('--n_epochs', type=int, default=20, help='number of training epochs')
@@ -77,7 +71,7 @@ parser.add_argument('--loss', type=str, default='quantile1', help='loss function
 
 args = parser.parse_args([])
 
-# %% Setups
+#%% Setups
 # Set default float and int types
 if args.default_float == 'float32':
     torch.set_default_dtype(torch.float32)
@@ -85,7 +79,6 @@ elif args.default_float == 'float64':
     torch.set_default_dtype(torch.float64)
 else:
     raise ValueError('default float type not supported')
-args.num_target_patch = args.target_len // args.patch_len
 
 if args.default_int == 'int32':
     args.torch_int = torch.int32
@@ -101,33 +94,26 @@ if torch.cuda.is_available():
 else:
     print('No GPU available, using the CPU instead.')
 
-# %% Prepare data
-if args.dset == "guangzhou":
-    args.data_path = '../../../data/GuangzhouMetro//'
-if args.dset == "seoul":
-    args.data_path = '../../../data/SeoulMetro//'
+#%% Prepare data
+args.dset = 'guangzhou'
 args.subsample = False
-args.n_epochs = 40
+args.n_epochs = 1
 args.d_model = 128
 args.n_heads = 8
 args.n_layers = 3
-args.patch_len = 3
-args.stride = 3
-args.num_patch = 36
-args.loss = 'rmse'
+args.loss = 'rmse'  # one of (quantile1, quantile3, quantile5, rmse, mae, gaussian_nll)
 args.max_lr = 0.001
 args.standardization = 'zscore'
-args.attn_mask_type = 'strict'
+args.attn_mask_type = 'none'
 args.pre_norm = True
 args.pe = 'zeros'
 args.learn_pe = True
 args.anneal_strategy = 'linear'
 args.data_mask_method = 'both'
 data_mask_method = args.data_mask_method
-target_len = args.target_len
+
 data_info = data_infos[args.dset]
 vars(args).update(data_info)
-args.input_len = int(args.target_len / target_len * args.input_len)
 args.context_len = get_context_len(args.patch_len, args.num_patch, args.stride)
 args.num_target_patch = args.target_len // args.patch_len
 print('args:', args)
@@ -136,8 +122,18 @@ reset_random_seeds(args.seed)
 
 data = read_data(args)
 data = detect_anomaly(data, args)
-train_data, val_data, test_data = split_train_val_test(data, args)
+dataset = MetroDataset_total(data, args, datatype=args.datatype)
+train_dataset = dataset.TrainDataset
+val_dataset = dataset.ValDataset
+test_dataset = dataset.TestDataset
+train_dataset.mask_method = args.data_mask_method; train_dataset.mask_ratio = args.data_mask_ratio
+train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, pin_memory=True)
+val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, pin_memory=True)
+test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False)
 
+train_data = train_dataset.data.loc[train_dataset.f_index, :]
+test_data = test_dataset.data.loc[test_dataset.f_index, :]
+val_data = val_dataset.data.loc[val_dataset.f_index, :]
 # %% prepare data for multivariate nbeats
 basedir = ".//nbeats_cache"
 stations = data['station'].unique()
