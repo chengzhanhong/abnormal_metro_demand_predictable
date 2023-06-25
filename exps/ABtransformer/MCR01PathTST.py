@@ -1,60 +1,56 @@
 #%%
+import time
+script_start_time = time.time()
+
 import sys
 import os
 cwd = os.getcwd()
 # extend the path to the parent directory to import the modules under the parent directory
 sys.path.append(os.path.dirname(os.path.dirname(cwd)))
-import numpy as np
-import matplotlib.pyplot as plt
-import pandas as pd
-from datasets.datautils import *
-import torch
-import torch.nn as nn
-from models.MetroTransformer import MetroTransformer
-from models.revin import RevIN
-from utilities.lr_finder import LRFinder
 from utilities.basics import *
 from utilities.loss import *
+from datasets.datautils import *
+from models.PatchTST import PatchTST
+from utilities.lr_finder import LRFinder
 import argparse
+
 #%% Define the default arguments
 parser = argparse.ArgumentParser()
 # General
-parser.add_argument('--framework', type=str, default='ABtransformer', help='framework name')
 parser.add_argument('--default_float', type=str, default='float32', help='default float type')
 parser.add_argument('--default_int', type=str, default='int32', help='default int type')
-parser.add_argument('--task', type=str, default='supervised', help='one of supervised, unsupervised, finetune')
+# parser.add_argument('--task', type=str, default='supervised', help='one of supervised, unsupervised, finetune')
 parser.add_argument('--seed', type=int, default=1, help='random seed')
+parser.add_argument('--max_run_time', type=int, default=10, help='maximum running time in hours')
 
 # Dataset and dataloader
-parser.add_argument('--dset', type=str, default='guangzhou', help='dataset name')
+parser.add_argument('--dset', type=str, default='guangzhou', help='dataset name, guangzhou or nyc or seoul')
 parser.add_argument('--subsample', type=bool, default=False, help='Whether to subsample the dataset for quick test')
-parser.add_argument('--t_resolution', type=str, default='10T', help='the time resolution for resampling')
-parser.add_argument('--patch_len', type=int, default=6, help='patch length')
-parser.add_argument('--stride', type=int, default=6, help='stride between patch')
-parser.add_argument('--num_patch', type=int, default=36, help='number of patches for one type of flow')
-parser.add_argument('--target_len', type=int, default=72, help='forecast horizon for supervised learning')
+parser.add_argument('--datatype', type=str, default='PatchTST', help='one of seq, concat')
+parser.add_argument('--data_mask_method', type=str, default='target', help='one of (target, both)')
+parser.add_argument('--data_mask_ratio', type=float, default=0.2, help='the ratio of masked data in context')
 parser.add_argument('--train_r', type=float, default=0.8, help='the ratio of training data')
 parser.add_argument('--val_r', type=float, default=0.1, help='the ratio of validation data')
 parser.add_argument('--test_r', type=float, default=0.1, help='the ratio of test data')
 parser.add_argument('--batch_size', type=int, default=128, help='batch size')
 parser.add_argument('--flow_diff_r', type=float, default=0.4, help='the maximum possible ratio of in-out flow '
                                                                    'difference of a day, used to remove outliers')
+parser.add_argument('--standardization', type=str, default='iqr', help='one of (iqr, zscore, minmax)')
 
-# RevIN
-parser.add_argument('--revin', type=int, default=1, help='whether use reversible instance normalization')
 
 # Model args
 parser.add_argument('--n_layers', type=int, default=3, help='number of Transformer layers')
-parser.add_argument('--n_heads', type=int, default=16, help='number of Transformer heads')
+parser.add_argument('--n_heads', type=int, default=8, help='number of Transformer heads')
 parser.add_argument('--d_model', type=int, default=128, help='Transformer d_model')
-parser.add_argument('--d_ff', type=int, default=256, help='Tranformer MLP dimension')
+parser.add_argument('--d_ff', type=int, default=256, help='Transformer MLP dimension')
+parser.add_argument('--attn_dropout', type=float, default=0.2, help='Transformer attention dropout')
 parser.add_argument('--dropout', type=float, default=0.2, help='Transformer dropout')
 parser.add_argument('--head_dropout', type=float, default=0, help='head dropout')
 parser.add_argument('--pre_norm', type=bool, default=False, help='whether to apply normalization before attention')
 parser.add_argument('--activation', type=str, default='gelu', help='activation function in Transformer')
-parser.add_argument('--head_type', type=str, default='prediction', help='one of (prediction, pretrain, MQRnn)')
 parser.add_argument('--store_attn', type=bool, default=True, help='whether to store attention weights')
-parser.add_argument('--norm', type=str, default='BatchNorm', help='normalization layer, one of (BatchNorm, LayerNorm)')
+parser.add_argument('--norm', type=str, default='LayerNorm', help='normalization layer, one of (BatchNorm, LayerNorm)')
+parser.add_argument('--max_lr', type=float, default=1e-3, help='maximum learning rate for one cycle policy')
 
 # positional encoding and feature embedding
 parser.add_argument('--pe', type=str, default='zeros', help='type of position encoding (zeros, sincos, or none)')
@@ -63,14 +59,15 @@ parser.add_argument('--flow_eb', type=bool, default=True, help='whether to use f
 parser.add_argument('--station_eb', type=bool, default=True, help='whether to use station embedding or not.')
 parser.add_argument('--weekday_eb', type=bool, default=True, help='whether to use weekday embedding or not.')
 parser.add_argument('--time_eb', type=bool, default=True, help='whether to use time embedding or not.')
+parser.add_argument('--attn_mask_type', type=str, default='none', help='the type of attention mask, one of none, '
+                                                                       'strict, boarding, cross')
 
 # Optimization args
 parser.add_argument('--n_epochs', type=int, default=20, help='number of training epochs')
-parser.add_argument('--lr', type=float, default=1e-4, help='learning rate')
-parser.add_argument('--loss', type=str, default='quantile1', help='loss function, one of (quantile1, quantile3, quantile5)')
+parser.add_argument('--loss', type=str, default='quantile1', help='loss function, one of '
+                                                                  '(quantile1, quantile3, quantile5, rmse)')
 
 args = parser.parse_args([])
-print('args:', args)
 
 #%% Setups
 # Set default float and int types
@@ -95,40 +92,76 @@ if torch.cuda.is_available():
 else:
     print('No GPU available, using the CPU instead.')
 
-if args.loss == 'quantile1':
-    args.out_dim = 1
-    args.quantiles = [0.5]
-elif args.loss == 'quantile3':
-    args.out_dim = 3
-    args.quantiles = [0.1, 0.5, 0.9]
-elif args.loss == 'quantile5':
-    args.out_dim = 5
-    args.quantiles = [0.1, 0.3, 0.5, 0.7, 0.9]
-else:
-    raise ValueError('loss function not supported')
-
 #%% Prepare data
-args.data_path = '../../../data/GuangzhouMetro//'
-args.subsample = False
+args.dset = "guangzhou"
+if args.dset == "guangzhou":
+    args.data_path = '../../../data/GuangzhouMetro//'
+if args.dset == "seoul":
+    args.data_path = '../../../data/SeoulMetro//'
+
+args.model = 'PatchTST'
+args.subsample = True
+args.n_epochs = 2
+args.d_model = 128
+args.n_heads = 8
+args.n_layers = 3
+args.patch_len = 3
+args.stride = 3
+args.num_patch = 36
+args.loss = 'rmse'
+args.max_lr = 0.001
+args.standardization = 'zscore'
+args.attn_mask_type = 'strict'
+args.pre_norm = True
+args.pe = 'zeros'
+args.learn_pe = True
+args.anneal_strategy = 'linear'
+args.data_mask_method = 'both'
+data_mask_method = args.data_mask_method
+
 data_info = data_infos[args.dset]
 vars(args).update(data_info)
 args.context_len = get_context_len(args.patch_len, args.num_patch, args.stride)
-
+args.num_target_patch = args.target_len // args.patch_len
+print('args:', args)
 # Set random seed
 reset_random_seeds(args.seed)
 
 data = read_data(args)
 data = detect_anomaly(data, args)
-train_data, val_data, test_data = split_train_val_test(data, args)
-train_dataset = MetroDataset(train_data, args)
-val_dataset = MetroDataset(val_data, args)
-test_dataset = MetroDataset(test_data, args)
-train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
-val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False)
+dataset = MetroDataset_total(data, args, datatype=args.datatype)
+train_dataset = dataset.TrainDataset
+val_dataset = dataset.ValDataset
+test_dataset = dataset.TestDataset
+train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, pin_memory=True)
+
+val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, pin_memory=True)
 test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False)
 
-#%%
+train_data = train_dataset.data.loc[train_dataset.f_index, :]
+if args.standardization == 'iqr':
+    x_loc = train_data.groupby('station')['inflow'].median().values
+    x_scale = (train_data.groupby('station')['inflow'].quantile(0.75) - train_data.groupby('station')['inflow'].quantile(0.25)).values
+elif args.standardization == 'zscore':
+    x_loc = train_data.groupby('station')['inflow'].mean().values
+    x_scale = train_data.groupby('station')['inflow'].std().values
+elif args.standardization == 'minmax':
+    x_loc = train_data.groupby('station')['inflow'].min().values
+    x_scale = (train_data.groupby('station')['inflow'].max() - train_data.groupby('station')['inflow'].min()).values
+else:
+    raise ValueError('standardization not supported')
+x_loc = torch.tensor(x_loc, dtype=torch.float32).to(device)
+x_scale = torch.tensor(x_scale, dtype=torch.float32).to(device)
+# x, y  = next(iter(train_loader))
+# y.shape
+# x[0].shape
+
+#%% Train model
+#%% Main experiments
 import wandb
+import sys
+print(sys.executable)
+wandb.login(key='cbe60bf4ccd8041b9a7b7f2946a1c63c85a56a69')
 def train_MetroTransformer(args, train_loader, val_loader):
     # Determine the number of embeddings
     num_embeds = []
@@ -141,50 +174,62 @@ def train_MetroTransformer(args, train_loader, val_loader):
     if args.time_eb:
         num_embeds.append(train_loader.dataset.num_time_in_day)
     num_embeds = tuple(num_embeds)
+    args.num_embeds = num_embeds
+    attn_mask = None  #get_att_mask_fuse(args.num_patch, args.num_target_patch, device=device)
 
-    model = MetroTransformer(target_len=args.target_len, patch_len=args.patch_len, num_patch=args.num_patch,
-                             num_embeds=num_embeds, n_layers=args.n_layers, d_model=args.d_model, n_heads=args.n_heads,
-                             d_ff=args.d_ff, norm=args.norm, dropout=args.dropout,
-                             act=args.activation, pre_norm=args.pre_norm, store_attn=args.store_attn,
-                             pe=args.pe, learn_pe=args.learn_pe, head_dropout=args.head_dropout,
-                             head_type = args.head_type, output_dim=args.out_dim, revin=args.revin)
+    model = PatchTST(x_loc=x_loc, x_scale=x_scale, attn_mask=attn_mask, **vars(args))
     model.to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
-    criterion = lambda x, y: quantile_loss(x, y, args.quantiles)
+    optimizer = torch.optim.Adam(model.parameters())
+    criterion = get_loss(args)
 
     # Find the max learning rate
-    lr_finder = LRFinder(model, optimizer, criterion, device=device)
-    max_lr, fig = lr_finder.range_test(train_loader, end_lr=100, num_iter=100)
-    lr_finder.reset()
-    args.max_lr = max_lr
-    run = wandb.init(project='MetroTransformer', config=dict(args._get_kwargs()), reinit=True)
-    wandb.log({'lr_finder': wandb.Image(fig)})
+    # lr_finder = LRFinder(model, optimizer, criterion, device=device)
+    # max_lr, fig = lr_finder.range_test(train_loader, end_lr=100, num_iter=100)
+    # args.max_lr = max_lr
+    # lr_finder.reset()
 
+    if args.subsample:
+        mode = 'disabled'
+    else:
+        mode = 'online'
+    run = wandb.init(project='MetroTransformer', config=dict(args._get_kwargs()), reinit=True, mode='online')
+    # wandb.log({'lr_finder': wandb.Image(fig)})
+    import datetime
+    now = str(datetime.datetime.now().day) + str(datetime.datetime.now().hour)
+    wandb.run.name = now + f'_{args.dset}_{train_dataset.num_flow_type}types_halfmask'
     args.name = run.name
     # learning rate scheduler
-    scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=max_lr, steps_per_epoch=len(train_loader),
-                                                    epochs=args.n_epochs)
+    scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=args.max_lr, steps_per_epoch=len(train_loader),
+                                                    epochs=args.n_epochs, pct_start=1/args.n_epochs,
+                                                    anneal_strategy=args.anneal_strategy)
     step_loss = []
     epoch_loss = []
     lrs = []
     best_val_loss = np.inf
-    patience = 5  # Number of epochs with no improvement after which training will be stopped
+    patience = 20  # Number of epochs with no improvement after which training will be stopped
     epochs_no_improve = 0
-    for epoch in range(args.n_epochs):
+    for epoch in range(args.n_epochs): # +args.n_finetune):
+        if epoch == args.n_epochs:
+            # finetune
+            train_loader.dataset.mask_method = 'target'
+            model.load_state_dict(torch.load(f'{args.name}.pth'))
+
         model.train()
         for i, (inputs, target) in enumerate(train_loader):
             inputs = [input.to(device) for input in inputs]
             target = target.to(device)
             optimizer.zero_grad()
             output = model(inputs)
-            loss = criterion(target, output)
+            loss = criterion(output, target)
             step_loss.append(loss.item())
             lrs.append(scheduler.get_last_lr()[0])
             loss.backward()
             optimizer.step()
-            scheduler.step()
-            if i % 100 == 0:
+            if epoch < args.n_epochs:
+                scheduler.step()
+            if i % 300 == 0:
                 print(f'Epoch [{epoch}/{args.n_epochs}], Step [{i}/{len(train_loader)}], Loss: {loss.item():.4f}')
+
         epoch_loss.append(np.mean(step_loss[-len(train_loader):]))
 
         # Calculate validation loss
@@ -196,72 +241,66 @@ def train_MetroTransformer(args, train_loader, val_loader):
             output = model(inputs)
             loss = criterion(output, target)
             val_loss.append(loss.item())
-        print(f'Epoch [{epoch}/{args.n_epochs}], Val Loss: {np.mean(val_loss):.4f} \t Train Loss: {epoch_loss[-1]:.4f}')
+        print(f'Epoch [{epoch}/{args.n_epochs}], Val Loss: {np.mean(val_loss):.4f} \t Train Loss: {epoch_loss[-1]:.4f} '
+              f'\t total time: {time.time() - script_start_time:.2f}')
         best_val_loss = min(best_val_loss, np.mean(val_loss))
-        wandb.log({'train_loss': epoch_loss[-1], 'val_loss': np.mean(val_loss), 'lr': scheduler.get_last_lr()[0], 'epoch': epoch})
+        wandb.log({'train_loss': epoch_loss[-1], 'val_loss': np.mean(val_loss), 'lr': scheduler.get_last_lr()[0],
+                   'epoch': epoch })
 
         # Save the current best model
         if np.mean(val_loss) == best_val_loss:
-            torch.save(model.state_dict(), f'log//{args.name}.pth')
+            torch.save(model.state_dict(), f'{args.name}.pth')
             epochs_no_improve = 0
         else:
             epochs_no_improve += 1
         if epochs_no_improve == patience:
             print('Early stopping!')
             break
+        if time.time() - script_start_time > args.max_run_time*3600:
+            print(f'Time limit {args.max_run_time} hours reached! Stopping training.')
+            break
     # Load the best model
-    model.load_state_dict(torch.load(f'log//{args.name}.pth'))
+    try:
+        model.load_state_dict(torch.load(f'{args.name}.pth'))
+    #         model.load_state_dict(torch.load(f'../../logs//{args.name}.pth'))
+    except:
+        pass
 
     # Log the training loss
-    fig,ax = plt.subplots()
+    fig, ax = plt.subplots()
     ax.plot(step_loss)
     ax.set_xlabel('Step')
     ax.set_ylabel('Loss')
     wandb.log({"step_loss": wandb.Image(fig)})
 
     # Log the learning rate
-    fig,ax = plt.subplots()
-    ax.plot(lrs)
-    ax.set_xlabel('Step')
-    ax.set_ylabel('Learning rate')
-    wandb.log({"lr": wandb.Image(fig)})
-
-    wandb.finish()
+    fig2, ax2 = plt.subplots()
+    ax2.plot(lrs)
+    ax2.set_xlabel('Step')
+    ax2.set_ylabel('Learning rate')
+    wandb.log({"step_learning_rate": wandb.Image(fig2)})
+    # wandb.finish()
     return model
 
-train_MetroTransformer(args, train_loader, val_dataset)
-#%% Unit test
-# a = next(iter(train_loader))
-# for i in a[0]:
-#     print(i.shape)
-#
-# a = data.inflow.values.reshape(-1,159, order='F')
-# plt.matshow(a)
-# # Test if MetroDataset exclude nan values
-# train_dataset = MetroDataset(train_data, args)
-# for i in range(len(train_dataset)):
-#     inputs, _ = train_dataset[i]
-#     inflow = inputs[0]
-#     station = inputs[2]
-#     assert torch.isnan(inflow).sum() == 0, f'nan values in the dataset at index {i}'
-#     # If stations are all the same
-#     assert torch.all(station == station[0]), f'station values are not the same at index {i}'
-#
-# # Test if all infeasible index in MetroDataset are infeasible
-# for index in train_dataset.if_index:
-#     inflow = train_dataset.data.loc[index:index+train_dataset.sample_len, 'inflow'].values
-#     station = train_dataset.data.loc[index:index+train_dataset.sample_len, 'station'].values
-#     assert (np.isnan(inflow).sum() > 0) or ~np.all(station == station[0]), f'feasible index in infeasible index {index}'
-#
-# train_dataset.if_index.shape
-# train_dataset.f_index.shape
-# #
-# import wandb
-# api = wandb.Api()
 
-# run = api.run("deepzhanhong/MetroTransformer/vg1v6iyw")
-# run.config["key"] = updated_value
-# run.update()
-args = get_wandb_args('deepzhanhong/MetroTransformer/iz8g92dv')
-model = MetroTransformer(**args.__dict__)
-model.load_state_dict(torch.load(f'log//{args.name}.pth', map_location=torch.device('cpu')))
+model = train_MetroTransformer(args, train_loader, val_loader)
+
+#%% Evaluate the model on the test set
+test_dataset.mode = 'normal'
+test_loader = DataLoader(test_dataset)
+normal_test_mae, normal_test_rmse = evaluate(model, test_loader, device=device)
+wandb.log({'normal_test_mae': normal_test_mae, 'normal_test_rmse': normal_test_rmse})
+
+test_dataset.mode = 'abnormal'
+test_loader = DataLoader(test_dataset)
+abnormal_test_mae, abnormal_test_rmse = evaluate(model, test_loader, device=device)
+wandb.log({'abnormal_test_mae': abnormal_test_mae, 'abnormal_test_rmse': abnormal_test_rmse})
+
+total_test_mae = (normal_test_mae * len(test_dataset.normal_index) +
+                  abnormal_test_mae * len(test_dataset.abnormal_index)) \
+                 / len(test_dataset.f_index)
+total_test_rmse = ((normal_test_rmse**2 * len(test_dataset.normal_index) +
+                    abnormal_test_rmse**2 * len(test_dataset.abnormal_index))
+                   / len(test_dataset.f_index))**0.5
+wandb.log({'total_test_mae': total_test_mae, 'total_test_rmse': total_test_rmse})
+wandb.finish()
