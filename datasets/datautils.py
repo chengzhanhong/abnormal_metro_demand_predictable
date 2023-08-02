@@ -20,11 +20,13 @@ data_infos = {'guangzhou': {'data_path': '../../../data/GuangzhouMetro//',
                             'stride': 3,
                             'num_patch': 36,
                             'target_len': 36,  # 6 hours
-                            'flow_diff_r': 0.4, # the maximum possible ratio of in-out flow difference of a day, used to remove outliers
+                            'flow_diff_r': 0.4,
+                            # the maximum possible ratio of in-out flow difference of a day, used to remove outliers
+                            'station_eb': 159,
                             },
               'seoul': {'data_path': '../../data/SeoulMetro/',
-                        'inflow_file': 'in_data.csv',
-                        'outflow_file': 'out_data.csv',
+                        'inflow_file': 'seoul_in_data.csv',
+                        'outflow_file': 'seoul_out_data.csv',
                         'start_minute': 300,
                         'end_minute': 1441,
                         'subsample_start': '2023-01-01',
@@ -35,7 +37,8 @@ data_infos = {'guangzhou': {'data_path': '../../../data/GuangzhouMetro//',
                         'stride': 1,
                         'num_patch': 20,
                         'target_len': 6,  # 6 hours
-                        'flow_diff_r': 0.5, # the maximum possible ratio of in-out flow difference of a day, used to remove outliers
+                        'flow_diff_r': 0.5,
+                        # the maximum possible ratio of in-out flow difference of a day, used to remove outliers
                         },
               'hangzhou': {'data_path': '../../data/HangzhouMetro/',
                            'inflow_file': 'in_data.csv',
@@ -50,9 +53,11 @@ data_infos = {'guangzhou': {'data_path': '../../../data/GuangzhouMetro//',
                            'stride': 3,
                            'num_patch': 37,
                            'target_len': 36,  # 6 hours
-                           'flow_diff_r': 0.4, # the maximum possible ratio of in-out flow difference of a day, used to remove outliers
+                           'flow_diff_r': 0.4,
+                           # the maximum possible ratio of in-out flow difference of a day, used to remove outliers
                            },
               }
+
 
 def reset_random_seeds(n=1):
     os.environ['PYTHONHASHSEED'] = str(n)
@@ -60,6 +65,7 @@ def reset_random_seeds(n=1):
     torch.random.manual_seed(n)
     np.random.seed(n)
     random.seed(n)
+
 
 def get_context_len(patch_len, num_patch, stride):
     """Get the context length for forecasting based on patch_len, num_patch, stride."""
@@ -202,53 +208,47 @@ def read_data(args):
 
     return data
 
+
 def get_train_val_test_index(data, args):
     """Split the data into train, val, test set according to the ratio, then return the index.
     - The (train + val) and test set are split on chronological order, and the
       split are rounded to the nearest day.
     - The train and val set are split randomly.
     """
-    # train_r, val_r, test_r = args.train_r, args.val_r, args.test_r
-    # total_r = train_r + val_r + test_r
-    # train_r, val_r, test_r = train_r / total_r, val_r / total_r, test_r / total_r
-    #
-    # t_resolution = int(args.t_resolution[:-1])
-    # day_length = (args.end_minute - args.start_minute) // t_resolution
-    # time_len = data.time.nunique()
-    # time_index = np.sort(data.time.unique())
-    #
-    # # Get train and validation idx
-    # sample_len = args.context_len + args.target_len
-    # train_val_size = int((time_len * (train_r + val_r)) // day_length * day_length) - sample_len
-    # train_val_idx = time_index[:train_val_size]
-    # # Randomly split train_val_idx into train_idx and val_idx
-    # reset_random_seeds(args.seed)
-    # # train_val_idx = np.random.permutation(train_val_idx)
-    # train_idx = train_val_idx[:int(train_val_idx.shape[0] * train_r / (train_r + val_r))]
-    # val_idx = train_val_idx[int(train_val_idx.shape[0] * train_r / (train_r + val_r)):]
-    #
-    # # test_idx is the rest of the data
-    # test_idx = time_index[train_val_size:]
-
     train_r, val_r, test_r = args.train_r, args.val_r, args.test_r
     total_r = train_r + val_r + test_r
     train_r, val_r, test_r = train_r / total_r, val_r / total_r, test_r / total_r
+
     t_resolution = int(args.t_resolution[:-1])
     day_length = (args.end_minute - args.start_minute) // t_resolution
-    data_len = data.time.nunique()
-    time_index = np.sort(data.time.unique())
-    context_len = args.context_len
-    train_size = int(((data_len - context_len) * train_r) // day_length * day_length)
-    val_size = int(((data_len - context_len) * val_r) // day_length * day_length)
-    train_idx = time_index[:train_size]
-    val_idx = time_index[train_size - context_len:train_size + val_size]
-    test_idx = time_index[train_size + val_size - context_len:]
+    time_len = data.time.nunique()
+    if args.split_order=='random':
+        rng1 = np.random.default_rng(args.seed)
+        time_index = rng1.permutation(data.time.unique())
+    elif args.split_order=='chronological':
+        time_index = np.sort(data.time.unique())
+    else:
+        raise ValueError('Invalid split order.')
 
+    # Get train and validation idx
+    sample_len = args.context_len + args.target_len
+    train_val_size = int((time_len * (train_r + val_r)) // day_length * day_length) - sample_len
+    train_val_idx = time_index[:train_val_size]
+
+    # Randomly split train_val_idx into train_idx and val_idx
+    rng1 = np.random.default_rng(args.seed)
+    train_val_idx = rng1.permutation(train_val_idx)
+    train_idx = train_val_idx[:int(train_val_idx.shape[0] * train_r / (train_r + val_r))]
+    val_idx = train_val_idx[int(train_val_idx.shape[0] * train_r / (train_r + val_r)):]
     train_idx = data.loc[data.time.isin(train_idx)].index
     val_idx = data.loc[data.time.isin(val_idx)].index
+
+    # test_idx is the rest of the data
+    test_idx = time_index[train_val_size:]
     test_idx = data.loc[data.time.isin(test_idx)].index
 
     return train_idx, val_idx, test_idx
+
 
 
 class MetroDataset_base(Dataset):
@@ -332,7 +332,7 @@ class MetroDataset_base(Dataset):
         infeasible_idx = np.setdiff1d(self.data.index.values, feasible_idx)
         return feasible_idx, infeasible_idx
 
-    def get_data_from_ts(self, time, station, method='target', mask_ratio=0.2):
+    def get_data_from_ts(self, time, station):
         """Get data from time and station."""
         # Test whether the time and station is feasible and valid.
         index_now = self.data[(self.data.time == time) & (self.data.station == station)].index.values[0]
@@ -345,17 +345,7 @@ class MetroDataset_base(Dataset):
 
         # Get the location of index in self._index.
         index = np.where(self._index == index_start)[0][0]
-
-        old_method = self.mask_method
-        old_mask_ratio = self.mask_ratio
-
-        self.mask_method = method
-        self.mask_ratio = mask_ratio
-
         x, y = self.__getitem__(index)
-
-        self.mask_method = old_method
-        self.mask_ratio = old_mask_ratio
         return (x, y), data_piece
 
 
@@ -364,7 +354,9 @@ class MetroDataset_total(MetroDataset_base):
         self.data = data.sort_values(['station', 'time']).reset_index(drop=True)
         super(MetroDataset_total, self).__init__(self.data, args, f_index, normal_index, abnormal_index)
 
-        datatype_dict = {'seq':MetroDataset_seq, 'concat':MetroDataset_concat, 'PatchTST':MetroDataset_PatchTST}
+        datatype_dict = {'seq': MetroDataset_seq, 'concat': MetroDataset_concat,
+                         'PatchTST_concat': MetroDataset_PatchTST_concat, 'PatchTST_seq': MetroDataset_PatchTST_seq,
+                         'ABT_auto_seq': MetroDataset_auto_seq, 'Linear': MetroDataset_linear}
         child_dataset = datatype_dict[datatype]
 
         # Get train, val, test Dataset
@@ -400,7 +392,7 @@ class MetroDataset_total(MetroDataset_base):
         else:
             raise ValueError('Invalid index')
 
-        return dataset.get_data_from_ts(time, station, method, mask_ratio)
+        return dataset.get_data_from_ts(time, station)
 
 
 class MetroDataset_seq(MetroDataset_base):
@@ -414,6 +406,7 @@ class MetroDataset_seq(MetroDataset_base):
         self.num_flow_type = 3
         self.mask_method = mask_method
         self.mask_ratio = data_mask_ratio
+
     def __getitem__(self, index):
         """Returns
          context: num_patch*2 x patch_len
@@ -540,10 +533,10 @@ class MetroDataset_concat(MetroDataset_base):
         return masked_data, target, fcst_loc, mask_loc, target_loc
 
 
-class MetroDataset_PatchTST(MetroDataset_base):
+class MetroDataset_PatchTST_concat(MetroDataset_base):
     def __init__(self, data, args, f_index=None, normal_index=None, abnormal_index=None,
                  mask_method='target', data_mask_ratio=0):
-        super(MetroDataset_PatchTST, self).__init__(data, args, f_index, normal_index, abnormal_index)
+        super(MetroDataset_PatchTST_concat, self).__init__(data, args, f_index, normal_index, abnormal_index)
         self.flow_type = torch.zeros(self.num_patch, dtype=args.torch_int)
         self.num_flow_type = 1
 
@@ -573,7 +566,96 @@ class MetroDataset_PatchTST(MetroDataset_base):
         return (data, flow_type, station, weekday, time_in_day), target
 
 
-#%% The followings are achived functions. Use the above functions instead.
+class MetroDataset_PatchTST_seq(MetroDataset_base):
+    def __init__(self, data, args, f_index=None, normal_index=None, abnormal_index=None,
+                 mask_method='target', data_mask_ratio=0):
+        super(MetroDataset_PatchTST_seq, self).__init__(data, args, f_index, normal_index, abnormal_index)
+        self.flow_type = torch.cat((torch.zeros(self.num_patch, dtype=args.torch_int),
+                                    torch.ones(self.num_patch, dtype=args.torch_int)))
+
+        self.num_flow_type = 2
+
+    def __getitem__(self, index):
+        """Returns
+         context: num_patch*2 x patch_len
+         flow_type: num_patch*2
+         station: num_patch*2
+         weekday: num_patch*2
+         time_in_day: num_patch*2
+         target: target_len
+         """
+        data_piece = self.data.iloc[self._index[index]:self._index[index] + self.sample_len, :]
+        outflow_data = torch.from_numpy(data_piece.outflow.values[:self.context_len]).unfold(0, self.patch_len,
+                                                                                             self.stride)
+        inflow_data = torch.from_numpy(data_piece.inflow.values).unfold(0, self.patch_len, self.stride)
+        target = inflow_data[self.num_patch:, :].clone()
+        inflow_data = inflow_data[:self.num_patch, :].clone()
+        outflow_data = outflow_data[:self.num_patch, :].clone()
+        data = torch.cat((outflow_data, inflow_data), dim=0)
+
+        features = torch.from_numpy(data_piece[['station', 'weekday', 'time_in_day']].values[:: self.stride])
+        station = torch.cat((features[0:self.num_patch, 0], features[0:self.num_patch, 0]), dim=0)
+        weekday = torch.cat((features[0:self.num_patch, 1], features[0:self.num_patch, 1]), dim=0)
+        time_in_day = torch.cat((features[0:self.num_patch, 2], features[0:self.num_patch, 2]), dim=0)
+        flow_type = self.flow_type.clone()
+
+        return (data, flow_type, station, weekday, time_in_day), target
+
+
+class MetroDataset_auto_seq(MetroDataset_base):
+    def __init__(self, data, args, f_index=None, normal_index=None, abnormal_index=None):
+        super(MetroDataset_auto_seq, self).__init__(data, args, f_index, normal_index, abnormal_index)
+        self.flow_type = torch.cat((torch.zeros(self.num_patch, dtype=args.torch_int),
+                                    torch.ones(self.num_patch + self.num_target_patch - 1, dtype=args.torch_int)))
+        self.num_flow_type = 2
+
+    def __getitem__(self, index):
+        """Returns
+         context: num_patch*2 x patch_len
+         flow_type: num_patch*2
+         station: num_patch*2
+         weekday: num_patch*2
+         time_in_day: num_patch*2
+         target: target_len
+         """
+        data_piece = self.data.iloc[self.f_index[index]:self.f_index[index] + self.sample_len, :]
+        outflow_data = torch.from_numpy(data_piece.outflow.values[:self.context_len]).unfold(0, self.patch_len,
+                                                                                             self.stride)
+        inflow_data = torch.from_numpy(data_piece.inflow.values[:]).unfold(0, self.patch_len, self.stride)
+        target = inflow_data[1:, :].clone()
+        inflow_data = inflow_data[:-1, :].clone()
+        outflow_data = outflow_data[:self.num_patch, :].clone()
+        data = torch.cat((outflow_data, inflow_data), dim=0)
+
+        features = torch.from_numpy(data_piece[['station', 'weekday', 'time_in_day']].values[:: self.stride])
+        station = torch.cat((features[0:self.num_patch, 0], features[:-1, 0]), dim=0)
+        weekday = torch.cat((features[0:self.num_patch, 1], features[:-1, 1]), dim=0)
+        time_in_day = torch.cat((features[0:self.num_patch, 2], features[:-1, 2]), dim=0)
+        flow_type = self.flow_type.clone()
+
+        return (data, flow_type, station, weekday, time_in_day), target
+
+
+class MetroDataset_linear(MetroDataset_base):
+    def __init__(self, data, args, f_index=None, normal_index=None, abnormal_index=None):
+        # The dataset for the Nlinear model
+        super(MetroDataset_linear, self).__init__(data, args, f_index, normal_index, abnormal_index)
+
+    def __getitem__(self, index):
+        """Returns
+         data: context_len
+         target: target_len
+         """
+        data_piece = self.data.iloc[self.f_index[index]:self.f_index[index] + self.sample_len, :]
+        outflow_data = torch.from_numpy(data_piece.outflow.values[:self.context_len])
+        inflow_data = torch.from_numpy(data_piece.inflow.values[:self.context_len])
+        target = torch.from_numpy(data_piece.inflow.values[self.context_len:])
+        station = torch.from_numpy(data_piece.station.values[[0]])
+        data = torch.cat((outflow_data, inflow_data), dim=0)
+        return (data, station), target
+
+
+# %% The followings are achived functions. Use the above functions instead.
 def split_train_val_test(data, args):
     """Archived function. Use get_train_val_test_index instead.
     Split the data into train, val, test set on chronological order.
@@ -605,9 +687,9 @@ def split_train_val_test(data, args):
     return train_data, val_data, test_data
 
 
-
 class MetroDataset(Dataset):
     """Archived dataset class, not used in the project."""
+
     def __init__(self, data, mask_method, args):
         self.data = data.sort_values(['station', 'time']).reset_index(drop=True)
         self.patch_len = args.patch_len
@@ -646,7 +728,8 @@ class MetroDataset(Dataset):
 
     def exclude_abnormal_flow(self, station=None, prominence=300):
         if station is not None:
-            abnormal_index = get_station_abnormal_index(self.data, station, prominence=prominence, patch_len=self.patch_len)
+            abnormal_index = get_station_abnormal_index(self.data, station, prominence=prominence,
+                                                        patch_len=self.patch_len)
             idx_set = set()
             for idx in abnormal_index:
                 idx_set.update(range(idx - self.sample_len + 1, idx + 1))
@@ -658,7 +741,8 @@ class MetroDataset(Dataset):
 
     def only_abnormal_flow(self, station=None, prominence=300):
         if station is not None:
-            abnormal_index = get_station_abnormal_index(self.data, station, prominence=prominence, patch_len=self.patch_len)
+            abnormal_index = get_station_abnormal_index(self.data, station, prominence=prominence,
+                                                        patch_len=self.patch_len)
             idx_set = set()
             for idx in abnormal_index:
                 idx_set.update(range(idx - self.sample_len + 1, idx + 1))
@@ -776,6 +860,7 @@ class MetroDataset(Dataset):
 
 class MetroDataset_v(MetroDataset):
     """Archived dataset class, not used in the project"""
+
     def __init__(self, data, mask_method, args):
         super(MetroDataset_v, self).__init__(data, mask_method, args)
         self.num_flow_type = 2

@@ -1,4 +1,4 @@
-__all__ = ['Transpose', 'LinBnDrop', 'SigmoidRange', 'sigmoid_range', 'get_activation_fn']
+__all__ = ['Transpose', 'LinBnDrop', 'SigmoidRange', 'sigmoid_range', 'get_activation_fn', 'Standardization']
            
 
 import torch
@@ -44,4 +44,23 @@ def get_activation_fn(activation):
     elif activation.lower() == "gelu": return nn.GELU()
     raise ValueError(f'{activation} is not available. You can use "relu", "gelu", or a callable')
 
+
+class Standardization(nn.Module):
+    def __init__(self, loc, scale):
+        super(Standardization, self).__init__()
+        self.loc = loc.reshape([-1, 1, 1])
+        self.scale = scale.reshape([-1, 1, 1])
+
+    def forward(self, x, i, mode: str):
+        """
+        x: (bs, num_patch, patch_len)
+        i: index of the patch, (bs,)
+        """
+        if mode == 'norm':
+            x = (x - self.loc[i]) / self.scale[i]
+        elif mode == 'denorm':
+            x = x * self.scale[i] + self.loc[i]
+        else:
+            raise NotImplementedError
+        return x
 

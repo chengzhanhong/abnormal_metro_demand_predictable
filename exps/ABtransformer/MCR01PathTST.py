@@ -26,7 +26,7 @@ parser.add_argument('--max_run_time', type=int, default=10, help='maximum runnin
 # Dataset and dataloader
 parser.add_argument('--dset', type=str, default='guangzhou', help='dataset name, guangzhou or nyc or seoul')
 parser.add_argument('--subsample', type=bool, default=False, help='Whether to subsample the dataset for quick test')
-parser.add_argument('--datatype', type=str, default='PatchTST', help='one of seq, concat')
+parser.add_argument('--datatype', type=str, default='PatchTST_seq', help='one of seq, concat')
 parser.add_argument('--data_mask_method', type=str, default='target', help='one of (target, both)')
 parser.add_argument('--data_mask_ratio', type=float, default=0.2, help='the ratio of masked data in context')
 parser.add_argument('--train_r', type=float, default=0.8, help='the ratio of training data')
@@ -99,7 +99,7 @@ if args.dset == "guangzhou":
 if args.dset == "seoul":
     args.data_path = '../../../data/SeoulMetro//'
 
-args.model = 'PatchTST'
+args.model = 'PatchTST_seq'
 args.subsample = True
 args.n_epochs = 2
 args.d_model = 128
@@ -152,11 +152,7 @@ else:
     raise ValueError('standardization not supported')
 x_loc = torch.tensor(x_loc, dtype=torch.float32).to(device)
 x_scale = torch.tensor(x_scale, dtype=torch.float32).to(device)
-# x, y  = next(iter(train_loader))
-# y.shape
-# x[0].shape
 
-#%% Train model
 #%% Main experiments
 import wandb
 import sys
@@ -181,12 +177,6 @@ def train_MetroTransformer(args, train_loader, val_loader):
     model.to(device)
     optimizer = torch.optim.Adam(model.parameters())
     criterion = get_loss(args)
-
-    # Find the max learning rate
-    # lr_finder = LRFinder(model, optimizer, criterion, device=device)
-    # max_lr, fig = lr_finder.range_test(train_loader, end_lr=100, num_iter=100)
-    # args.max_lr = max_lr
-    # lr_finder.reset()
 
     if args.subsample:
         mode = 'disabled'

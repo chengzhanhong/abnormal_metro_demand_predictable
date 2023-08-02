@@ -16,7 +16,7 @@ from .revin import *
 
 
 # Cell
-class MetroTransformer_v(nn.Module):
+class MetroTransformer_auto_seq(nn.Module):
     """
     Output dimension:
          [bs x target_len] for prediction
@@ -28,7 +28,7 @@ class MetroTransformer_v(nn.Module):
                  norm: str = 'LayerNorm', attn_dropout: float = 0., dropout: float = 0., act: str = "gelu",
                  pre_norm: bool = False, store_attn: bool = False,
                  pe: str = 'zeros', learn_pe: bool = True, head_dropout=0,
-                 attn_mask=None, x_loc=None, x_scale=None, model='ABT_concat', **kwargs):
+                 attn_mask=None, x_loc=None, x_scale=None, **kwargs):
         """
         Parameters:
             num_embeds: tuple of number of embeddings for flow_type, station, weekday, or time_in_day
@@ -40,7 +40,6 @@ class MetroTransformer_v(nn.Module):
         """
         super().__init__()
 
-        num_patch = num_patch * 2
         self.num_patch = num_patch
         self.patch_len = patch_len
         self.num_target_patch = num_target_patch
@@ -55,12 +54,7 @@ class MetroTransformer_v(nn.Module):
                                      dropout=dropout, act=act, pre_norm=pre_norm, store_attn=store_attn,
                                      norm=norm, pe=pe, learn_pe=learn_pe)
 
-        # Head
-        if model == 'PatchTST':
-            self.head = PatchTSTHead(d_model, patch_len, num_patch, num_target_patch, head_dropout)
-        else:
-            self.head = ForecastHead(d_model, patch_len, head_dropout)
-
+        self.head = ForecastHead(d_model, patch_len, head_dropout)
         # Standardization
         self.standardization = Standardization(self.x_loc, self.x_scale)
         self.softplus = nn.Softplus()
@@ -70,40 +64,37 @@ class MetroTransformer_v(nn.Module):
         x: tuple of flow tensor [bs x num_patch x patch_len] and feature tensors of [bs x num_patch x 1].
         """
         z = x[0]
-        features = x[1:-1]
-        fcst_loc = x[-1]
+        features = x[1:]
         stations = features[1][:, 0].long()
+
         z = self.standardization(z, stations, 'norm')
-        # todo: test post_zero
-        # if self.post_zero:
-        #     z[fcst_loc==1] = 0
-
         z = self.backbone(z, features, self.attn_mask)  # z: [bs x (num_patch+num_target_patch) x d_model]
-
-        z = self.head(z, fcst_loc)  # z: [bs x num_fcst x patch_len]
+        z = self.head(z, self.num_target_patch+self.num_patch-1)  # z: [bs x num_fcst x patch_len]
         z = self.standardization(z, stations, 'denorm')  # z: [bs x num_fcst x patch_len]
         z = self.softplus(z)
         return z
 
-
-class Standardization(nn.Module):
-    def __init__(self, loc, scale):
-        super(Standardization, self).__init__()
-        self.loc = loc.reshape([-1, 1, 1])
-        self.scale = scale.reshape([-1, 1, 1])
-
-    def forward(self, x, i, mode: str):
+    def forecast(self, x):
         """
-        x: (bs, num_patch, patch_len)
-        i: index of the patch, (bs,)
+        Auto-regressive forecasting.
+        x: tuple of flow tensor [bs x num_patch x patch_len] and feature tensors of [bs x num_patch x 1].
         """
-        if mode == 'norm':
-            x = (x - self.loc[i]) / self.scale[i]
-        elif mode == 'denorm':
-            x = x * self.scale[i] + self.loc[i]
-        else:
-            raise NotImplementedError
-        return x
+        self.eval()
+        N = self.num_target_patch  # number of patches to predict
+        y = x[0].clone()  # The input and also the prediction
+        features = x[1:]
+        stations = features[1][:, 0].long()
+
+        for i in range(N):
+            z = self.standardization(y, stations, 'norm')
+            z = self.backbone(z, features, self.attn_mask)  # z: [bs x (num_patch+num_target_patch) x d_model]
+            z = self.head(z, N)  # z: [bs x num x patch_len]
+            z = self.standardization(z, stations, 'denorm')  # z: [bs x num_fcst x patch_len]
+            z = self.softplus(z)
+            if i < N - 1:
+                y[:, -N+i+1, :] = z[:, -N+i, :]
+
+        return z[:, -N:, :]
 
 
 class MetroEncoder(nn.Module):
@@ -116,10 +107,10 @@ class MetroEncoder(nn.Module):
         self.d_model = d_model
 
         # Input encoding: projection of feature vectors onto a d-dim vector space
-        self.W_P = nn.Linear(patch_len * 2, d_model)
+        self.W_P = nn.Linear(patch_len, d_model)
 
         # Positional encoding
-        self.W_pos = positional_encoding(pe, learn_pe, num_target_patch+int(num_patch/2), d_model)
+        self.W_pos = positional_encoding(pe, learn_pe, num_target_patch+num_patch*2-1, d_model)
 
         # Flow_type, station, weekday, or time_in_day encoding
         self.feature_eb = nn.ModuleList([nn.Embedding(num_embeds[i], d_model) for i in range(len(num_embeds))])
@@ -247,36 +238,11 @@ class ForecastHead(nn.Module):
         self.dropout = nn.Dropout(dropout)
         self.linear = nn.Linear(d_model, patch_len)
 
-    def forward(self, x, fcst_loc):
+    def forward(self, x, target_length):
         """
         x: tensor [bs x num_patch x d_model]
-        output: tensor [bs x num_fcst x patch_len]
+        output: tensor [bs x target_length x patch_len]
         """
-        x = torch.gather(x, dim=1, index=fcst_loc.unsqueeze(-1).expand(-1, -1, x.size(-1)))  # [bs x num_fcst x d_model]
-        x = self.linear(self.dropout(x))  # [bs x num_fcst x patch_len]
+        x = x[:, -target_length:, :]  # [bs x target_length x d_model]
+        x = self.linear(self.dropout(x))  # [bs x target_length x patch_len]
         return x
-
-
-class PatchTSTHead(nn.Module):
-    """The head for the PatchTST model"""
-    def __init__(self, d_model, patch_len, num_patch, num_target_patch, dropout):
-        super().__init__()
-        self.patch_len = patch_len
-        self.num_patch = num_patch
-        self.num_target_patch = num_target_patch
-        self.dropout = nn.Dropout(dropout)
-        self.linear = nn.Linear(d_model*num_patch, patch_len*num_target_patch)
-        self.flatten = nn.Flatten(start_dim=-2)
-
-    def foward(self, x):
-        """
-        x: [bs x d_model*num_patch]
-        output: [bs x num_target_patch x patch_len]
-        """
-        x = self.flatten(x)  # [bs x d_model*num_patch]
-        x = self.linear(self.dropout(x))  # [bs x patch_len*num_target_patch]
-        x = x.view(x.size(0), self.num_target_patch, self.patch_len)  # [bs x num_target_patch x patch_len]
-        return x
-
-
-

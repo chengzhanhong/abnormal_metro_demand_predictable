@@ -61,6 +61,7 @@ class MetroTransformer(nn.Module):
         output_patch_len = patch_len - (patch_len - stride)
         output_dims = {'rmse': 1, 'mae': 1, 'gaussian_nll': 2, 'quantile1': 1, 'quantile3': 3, 'quantile5': 5}
         self.output_dim = output_dims[loss]
+        head ={}
         self.head = ForecastHead(d_model, output_patch_len, head_dropout, self.output_dim)
 
         # Standardization

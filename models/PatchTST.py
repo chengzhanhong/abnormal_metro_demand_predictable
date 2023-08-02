@@ -17,30 +17,26 @@ from .revin import *
 
 # Cell
 class PatchTST(nn.Module):
-    """
-    Output dimension:
-         [bs x target_len] for prediction
-         [bs x num_patch x patch_len] for pretrain
-    """
-
     def __init__(self, patch_len: int, num_patch: int, num_target_patch, num_embeds: tuple = (2, 159, 7, 217),
                  n_layers: int = 3, d_model=128, n_heads=16, d_ff: int = 256,
                  norm: str = 'LayerNorm', attn_dropout: float = 0., dropout: float = 0., act: str = "gelu",
                  pre_norm: bool = False, store_attn: bool = False,
                  pe: str = 'zeros', learn_pe: bool = True, head_dropout=0,
-                 attn_mask=None, x_loc=None, x_scale=None, model='ABT_concat', **kwargs):
+                 attn_mask=None, x_loc=None, x_scale=None, model='PatchTST_seq', **kwargs):
         """
         Parameters:
             num_embeds: tuple of number of embeddings for flow_type, station, weekday, or time_in_day
             d_ff: dimension of the inner feed-forward layer
             pe: type of positional encoding initialization, "zeros", "sincos", or None
             learn_pe: whether to learn positional encoding
-            revin: whether to use reversible instance normalization
-            ABflow: whether to use AB flow model
         """
         super().__init__()
+        self.model = model
+        if 'seq' in model:
+            num_patch = 2 * num_patch
+        elif 'concat' in model:
+            num_patch = num_patch
 
-        num_patch = num_patch
         self.num_patch = num_patch
         self.patch_len = patch_len
         self.num_target_patch = num_target_patch
@@ -53,7 +49,7 @@ class PatchTST(nn.Module):
                                      num_embeds=num_embeds, n_layers=n_layers, d_model=d_model,
                                      n_heads=n_heads, d_ff=d_ff, attn_dropout=attn_dropout,
                                      dropout=dropout, act=act, pre_norm=pre_norm, store_attn=store_attn,
-                                     norm=norm, pe=pe, learn_pe=learn_pe)
+                                     norm=norm, pe=pe, learn_pe=learn_pe, model=model)
 
         # Head
         self.head = PatchTSTHead(d_model, patch_len, num_patch, num_target_patch, head_dropout)
@@ -101,14 +97,17 @@ class Standardization(nn.Module):
 class MetroEncoder(nn.Module):
     def __init__(self, num_patch, patch_len, num_embeds, n_layers=3, d_model=128, n_heads=16,
                  d_ff=256, norm='BatchNorm', attn_dropout=0., dropout=0., act="gelu", store_attn=False,
-                 pre_norm=False, pe='zeros', learn_pe=True):
+                 pre_norm=False, pe='zeros', learn_pe=True, model='PatchTST_seq', **kwargs):
         super().__init__()
         self.num_patch = num_patch
-        self.patch_len = patch_len
+        if 'seq' in model:
+            patch_len = patch_len
+        elif 'concat' in model:
+            patch_len = patch_len * 2
         self.d_model = d_model
 
         # Input encoding: projection of feature vectors onto a d-dim vector space
-        self.W_P = nn.Linear(patch_len * 2, d_model)
+        self.W_P = nn.Linear(patch_len, d_model)
 
         # Positional encoding
         self.W_pos = positional_encoding(pe, learn_pe, num_patch, d_model)

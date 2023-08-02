@@ -149,8 +149,8 @@ x_scale = torch.asarray(x_scale, dtype=torch.float32).to(device)
 
 # %% prepare data
 # args = get_wandb_args('deepzhanhong/MetroTransformer/fj50u75p')
-# args = get_wandb_args('deepzhanhong/MetroTransformer/utadtdug')
-args = get_wandb_args('deepzhanhong/MetroTransformer/cx0kvkrx')
+args = get_wandb_args('deepzhanhong/MetroTransformer/utadtdug')  # The best baseline
+# args = get_wandb_args('deepzhanhong/MetroTransformer/cx0kvkrx')
 args.data_path = '..//..//..//data/GuangzhouMetro//'
 args.datatype = 'seq'
 # Set random seed
