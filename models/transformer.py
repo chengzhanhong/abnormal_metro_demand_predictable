@@ -2,8 +2,9 @@ import torch
 from torch import nn
 from torch import Tensor
 import torch.nn.functional as F
-from typing import Callable, Optional
+from typing import Optional
 import numpy as np
+from .basics import get_activation_fn, Transpose
 
 class MultiheadAttention(nn.Module):
     def __init__(self, d_model, n_heads, d_k=None, d_v=None, attn_dropout=0., proj_dropout=0., qkv_bias=True):
@@ -105,3 +106,95 @@ class ScaledDotProductAttention(nn.Module):
 
         return output, attn_weights
 
+
+
+# Cell
+class TransformerEncoder(nn.Module):
+    def __init__(self, d_model, n_heads, d_ff=None,
+                 norm='BatchNorm', attn_dropout=0., dropout=0., activation='gelu',
+                 n_layers=1, pre_norm=False, store_attn=False):
+        super().__init__()
+
+        self.layers = nn.ModuleList([TransformerEncoderLayer(d_model, n_heads=n_heads, d_ff=d_ff, norm=norm,
+                                                             attn_dropout=attn_dropout, dropout=dropout,
+                                                             activation=activation,
+                                                             pre_norm=pre_norm, store_attn=store_attn) for i in
+                                     range(n_layers)])
+
+    def forward(self, src: Tensor, attn_mask=None):
+        """
+        src: tensor [bs x q_len x d_model]
+        """
+        output = src
+        for mod in self.layers:
+            output = mod(output, attn_mask)
+        return output
+
+
+class TransformerEncoderLayer(nn.Module):
+    def __init__(self, d_model, n_heads, d_ff=256, store_attn=False,
+                 norm='BatchNorm', attn_dropout=0., dropout=0., bias=True,
+                 activation="gelu", pre_norm=False):
+        """pre_norm: if True, apply normalization before residual and multi-head attention."""
+        super().__init__()
+        assert not d_model % n_heads, f"d_model ({d_model}) must be divisible by n_heads ({n_heads})"
+        d_k = d_model // n_heads
+        d_v = d_model // n_heads
+
+        # Multi-Head attention
+        self.self_attn = MultiheadAttention(d_model, n_heads, d_k, d_v, attn_dropout=attn_dropout, proj_dropout=dropout)
+
+        # Add & Norm
+        self.dropout_attn = nn.Dropout(dropout)
+        if "batch" in norm.lower():
+            self.norm_attn = nn.Sequential(Transpose(1, 2), nn.BatchNorm1d(d_model), Transpose(1, 2))
+        elif "layer" in norm.lower():
+            self.norm_attn = nn.LayerNorm(d_model)
+        else:
+            raise NotImplementedError(f"Normalization {norm} not implemented")
+
+        # Position-wise Feed-Forward
+        self.ff = nn.Sequential(nn.Linear(d_model, d_ff, bias=bias),
+                                get_activation_fn(activation),
+                                nn.Dropout(dropout),
+                                nn.Linear(d_ff, d_model, bias=bias))
+
+        # Add & Norm
+        self.dropout_ffn = nn.Dropout(dropout)
+        if "batch" in norm.lower():
+            self.norm_ffn = nn.Sequential(Transpose(1, 2), nn.BatchNorm1d(d_model), Transpose(1, 2))
+        elif "layer" in norm.lower():
+            self.norm_ffn = nn.LayerNorm(d_model)
+        else:
+            raise NotImplementedError(f"Normalization {norm} not implemented")
+
+        self.pre_norm = pre_norm
+        self.store_attn = store_attn
+
+    def forward(self, src: Tensor, attn_mask=None):
+        """
+        src: tensor [bs x q_len x d_model]
+        """
+        # Multi-Head attention sublayer
+        if self.pre_norm:
+            src = self.norm_attn(src)
+        ## Multi-Head attention
+        src2, attn = self.self_attn(src, src, src, attn_mask=attn_mask)
+        if self.store_attn:
+            self.attn = attn
+        ## Add & Norm
+        src = src + self.dropout_attn(src2)  # Add: residual connection with residual dropout
+        if not self.pre_norm:
+            src = self.norm_attn(src)
+
+        # Feed-forward sublayer
+        if self.pre_norm:
+            src = self.norm_ffn(src)
+        ## Position-wise Feed-Forward
+        src2 = self.ff(src)
+        ## Add & Norm
+        src = src + self.dropout_ffn(src2)  # Add: residual connection with residual dropout
+        if not self.pre_norm:
+            src = self.norm_ffn(src)
+
+        return src

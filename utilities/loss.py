@@ -38,13 +38,7 @@ def mae_loss(y_hat, y):
     return torch.mean(torch.abs(y_hat - y))
 
 def get_loss(args):
-    if args.loss == 'quantile1':
-        return lambda x, y: quantile_loss(x, y, [0.5])
-    elif args.loss == 'quantile3':
-        return lambda x, y: quantile_loss(x, y, [0.5, 0.1, 0.9])
-    elif args.loss == 'quantile5':
-        return lambda x, y: quantile_loss(x, y, [0.5, 0.3, 0.7, 0.1, 0.9])
-    elif args.loss == 'rmse':
+    if args.loss == 'rmse':
         return rmse_loss
     elif args.loss == 'mae':
         return mae_loss
@@ -55,23 +49,49 @@ def get_loss(args):
         raise ValueError('loss not supported')
 
 
-def evaluate(model, test_loader, device='cpu'):
-    """Evaluate the model on the test set.
-    Returns
-    -------
-    test_mae, test_rmse
-    """
-    test_mae = 0
-    test_mse = 0
-    model.eval()
-    len_data = len(test_loader.dataset)
-    with torch.no_grad():
-        for x,y in test_loader:
-            len_batch = len(x[0])
-            x = [xx.to(device) for xx in x]
-            y = y.to(device)
-            y_hat = model(x)
-            test_mae += mae_loss(y_hat, y).item() * len_batch / len_data
-            test_mse += rmse_loss(y_hat, y).item()**2 * len_batch / len_data
-        test_rmse = test_mse**0.5
-    return test_mae, test_rmse
+
+# def evaluate(model, test_loader, device='cpu'):
+#     """Evaluate the model on the test set.
+#     Returns
+#     -------
+#     test_mae, test_rmse
+#     """
+#     normal_mae = 0
+#     normal_mse = 0
+#     abnormal_mae = 0
+#     abnormal_mse = 0
+#
+#     model.eval()
+#     len_data = len(test_loader.dataset)
+#     len_abnormal = 0
+#     len_normal = 0
+#     with torch.no_grad():
+#         for x, y, is_abnormal in test_loader:
+#             x = [xx.to(device) for xx in x]
+#             y_hat = model.forecast(x)
+#             num_target = y_hat.shape[1]
+#             y = y[:, -num_target:, :].to(device)
+#
+#             if (~is_abnormal).any():
+#                 bs_len_normal = (~is_abnormal).sum().item()
+#                 len_normal += bs_len_normal
+#                 normal_mse += rmse_loss(y_hat[~is_abnormal], y[~is_abnormal]).item() ** 2 * bs_len_normal / len_data
+#                 normal_mae += mae_loss(y_hat[~is_abnormal], y[~is_abnormal]).item() * bs_len_normal / len_data
+#             if is_abnormal.any():
+#                 bs_len_abnormal = is_abnormal.sum().item()
+#                 len_abnormal += bs_len_abnormal
+#                 abnormal_mse += rmse_loss(y_hat[is_abnormal], y[is_abnormal]).item() ** 2 * bs_len_abnormal / len_data
+#                 abnormal_mae += mae_loss(y_hat[is_abnormal], y[is_abnormal]).item() * bs_len_abnormal / len_data
+#
+#     total_rmse = (normal_mse + abnormal_mse) ** 0.5
+#     total_mae = normal_mae + abnormal_mae
+#
+#     normal_rmse = (normal_mse * (len_data / len_normal)) ** 0.5
+#     normal_mae = normal_mae * (len_data / len_normal)
+#
+#     abnormal_rmse = (abnormal_mse * (len_data / len_abnormal)) ** 0.5
+#     abnormal_mae = abnormal_mae * (len_data / len_abnormal)
+#
+#     return total_rmse, total_mae, normal_rmse, normal_mae, abnormal_rmse, abnormal_mae
+#
+

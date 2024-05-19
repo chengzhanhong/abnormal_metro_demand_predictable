@@ -5,6 +5,18 @@ import argparse
 import pandas as pd
 from matplotlib import pyplot as plt
 
+device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+if torch.cuda.is_available():
+    torch.cuda.set_device(device)
+else:
+    print('No GPU available, using the CPU instead.')
+
+parser = argparse.ArgumentParser()
+args = parser.parse_args([])
+args.torch_int = torch.int32
+args.default_int = 'int32'
+torch.set_default_dtype(torch.float32)
+args.default_float = 'float32'
 
 def get_wandb_args(path):
     import wandb
@@ -24,9 +36,20 @@ def get_wandb_args(path):
     args.name = run.name
     return args
 
+def get_num_embedding(args, train_loader):
+    num_embeds = []
+    if args.station_eb:
+        num_embeds.append(train_loader.dataset.num_station)
+    if args.weekday_eb:
+        num_embeds.append(train_loader.dataset.num_weekday)
+    if args.time_eb:
+        num_embeds.append(train_loader.dataset.num_time_in_day)
+    num_embeds = tuple(num_embeds)
+    return num_embeds
 
-def get_attn_mask(num_patch, num_target_patch, type='strict', device='cpu'):
-    assert type in ['strict', 'boarding', 'cross', 'none', None], 'type should be one of strict, boarding, cross.'
+
+def get_attn_mask(num_patch, num_target_patch, type='time', device='cpu'):
+    assert type in ['strict', 'boarding', 'cross', 'none', None, 'no_alighting', 'time'], 'type should be one of strict, boarding, cross.'
     if type == 'none' or type is None:
         return None
     num_boarding = num_patch + num_target_patch
@@ -45,6 +68,15 @@ def get_attn_mask(num_patch, num_target_patch, type='strict', device='cpu'):
         bb = bb.triu(1)
     elif type == 'cross':
         bb.zero_()
+
+    if type == 'no_alighting':
+        ab = torch.ones(num_patch, num_boarding, dtype=torch.bool)  # alighting to boarding
+        ba = torch.ones(num_boarding, num_patch, dtype=torch.bool)  # boarding to alighting
+        bb = bb.triu(1)
+
+    if type == 'time':
+        bb = bb.triu(1)
+        return bb.to(device)
 
     attn_mask = torch.cat([torch.cat([aa, ab], dim=1), torch.cat([ba, bb], dim=1)], dim=0)
     return attn_mask.to(device)
@@ -113,3 +145,22 @@ def exam_attention(t, s, model, dataset, args, loc=75, layer=2):
     axes[0].legend()
 
     return fig
+
+
+def get_loc_scale(train_data, standardization):
+    if standardization == 'zscore':
+        x_loc = train_data.groupby('station')['inflow'].mean().values
+        x_scale = train_data.groupby('station')['inflow'].std().values
+    elif standardization == 'meanscale':
+        x_loc = torch.zeros(train_data['station'].nunique(), dtype=torch.float32)
+        x_scale = train_data.groupby('station')['inflow'].mean().values
+    elif standardization == 'minmax':
+        x_loc = torch.zeros(train_data['station'].nunique(), dtype=torch.float32)
+        x_scale = (train_data.groupby('station')['inflow'].max() - train_data.groupby('station')['inflow'].min()).values
+    elif standardization == 'none':
+        x_loc = torch.zeros(train_data['station'].nunique(), dtype=torch.float32)
+        x_scale = torch.ones(train_data['station'].nunique(), dtype=torch.float32)
+    else:
+        raise ValueError('standardization not supported')
+    return x_loc, x_scale
+

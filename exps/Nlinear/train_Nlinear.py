@@ -65,11 +65,6 @@ else:
 
 #%% Prepare data
 args.dset = "guangzhou"
-if args.dset == "guangzhou":
-    args.data_path = '../../../data/GuangzhouMetro//'
-if args.dset == "seoul":
-    args.data_path = '../../../data/SeoulMetro//'
-
 args.model = 'Linear'
 args.datatype = 'Linear'
 args.subsample = False

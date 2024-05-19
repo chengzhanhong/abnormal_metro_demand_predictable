@@ -26,12 +26,9 @@ SinCosPosEncoding = PositionalEncoding
 def positional_encoding(pe, learn_pe, q_len, d_model):
     # Positional encoding
     if pe == None or pe == 'none':
-        W_pos = torch.empty((q_len, d_model))  # pe = None and learn_pe = False can be used to measure impact of pe
-        nn.init.uniform_(W_pos, -0.02, 0.02)
+        W_pos = torch.zeros((q_len, d_model))  # pe = None and learn_pe = False can be used to measure impact of pe
         learn_pe = False
-    # elif pe == 'zero':
-    #     W_pos = torch.empty((q_len, 1))
-    #     nn.init.uniform_(W_pos, -0.02, 0.02)
+
     elif pe == 'zeros':
         W_pos = torch.empty((q_len, d_model))
         nn.init.uniform_(W_pos, -0.02, 0.02)
@@ -43,6 +40,7 @@ def positional_encoding(pe, learn_pe, q_len, d_model):
     #     nn.init.uniform_(W_pos, a=0.0, b=0.1)
     elif pe == 'sincos':
         W_pos = PositionalEncoding(q_len, d_model, normalize=True)
+        learn_pe = False
     else:
         raise ValueError(f"{pe} is not a valid pe (positional encoder. Available types: 'gauss'=='normal', \
         'zeros', 'sincos', None.)")
