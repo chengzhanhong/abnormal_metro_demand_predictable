@@ -151,15 +151,18 @@ def get_loc_scale(train_data, standardization):
     if standardization == 'zscore':
         x_loc = train_data.groupby('station')['inflow'].mean().values
         x_scale = train_data.groupby('station')['inflow'].std().values
+    # elif standardization == 'quantile':
+    #     x_loc = train_data.groupby('station')['inflow'].quantile(0.5).values
+    #     x_scale = train_data.groupby('station')['inflow'].quantile(0.75).values - train_data.groupby('station')['inflow'].quantile(0.25).values
     elif standardization == 'meanscale':
         x_loc = torch.zeros(train_data['station'].nunique(), dtype=torch.float32)
-        x_scale = train_data.groupby('station')['inflow'].mean().values
+        x_scale = train_data.groupby('station')['inflow'].mean().values + 1
     elif standardization == 'minmax':
         x_loc = torch.zeros(train_data['station'].nunique(), dtype=torch.float32)
         x_scale = (train_data.groupby('station')['inflow'].max() - train_data.groupby('station')['inflow'].min()).values
     elif standardization == 'none':
-        x_loc = torch.zeros(train_data['station'].nunique(), dtype=torch.float32)
-        x_scale = torch.ones(train_data['station'].nunique(), dtype=torch.float32)
+        x_loc = torch.zeros(train_data['station'].nunique(), dtype=torch.int32)
+        x_scale = torch.ones(train_data['station'].nunique(), dtype=torch.int32)
     else:
         raise ValueError('standardization not supported')
     return x_loc, x_scale

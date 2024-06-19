@@ -1,3 +1,4 @@
+# The transformer models with cache design
 import torch
 from torch import nn
 from torch import Tensor
@@ -71,7 +72,7 @@ class ScaledDotProductAttention(nn.Module):
             v               : [bs x n_heads x seq_len x d_v]
             prev            : [bs x n_heads x q_len x seq_len]
             key_padding_mask: [bs x seq_len], indicates which elements of the key sequence should be ignored to deal
-                              with when the key sequence has variable length .
+                              with when the key sequence has variable length.
             attn_mask       : [1 x seq_len x seq_len] mask out certain elements of the sequence
                             (e.g., to prevent the model from attending to future information when predicting the next time step)
         Output shape:
@@ -120,15 +121,29 @@ class TransformerEncoder(nn.Module):
                                                              activation=activation,
                                                              pre_norm=pre_norm, store_attn=store_attn) for i in
                                      range(n_layers)])
-
-    def forward(self, src: Tensor, attn_mask=None):
+        self.previous_cache = None
+    def forward(self, src: Tensor, attn_mask=None, cache=False):
         """
         src: tensor [bs x q_len x d_model]
         """
-        output = src
+        # Retrieve the cache if available
+        if cache and (self.previous_cache is not None):
+            src_kv = torch.cat([self.previous_cache, src], dim=1)
+            self.previous_cache = src_kv
+        else:
+            src_kv = src
+            if cache:
+                self.previous_cache = src
+
+        # Forward pass through the layers using cache if available
         for mod in self.layers:
-            output = mod(output, attn_mask)
-        return output
+            src = mod(src, src_kv, attn_mask, cache=cache)
+            if cache and (self.previous_cache is not None):
+                src_kv = mod.src_kv
+            else:  # if cache is False or the first time to cache
+                src_kv = src
+
+        return src
 
 
 class TransformerEncoderLayer(nn.Module):
@@ -170,18 +185,26 @@ class TransformerEncoderLayer(nn.Module):
 
         self.pre_norm = pre_norm
         self.store_attn = store_attn
+        self.src_kv = None
+        self.attn = None
 
-    def forward(self, src: Tensor, attn_mask=None):
+    def forward(self, src: Tensor, src_kv:Optional[Tensor]=None, attn_mask:Optional[Tensor]=None, cache=False):
         """
-        src: tensor [bs x q_len x d_model]
+        src: tensor [bs x q_len_current x d_model] if src_kv is None else [bs x q_len_full x d_model]
+        src_kv: tensor [bs x q_len_full x d_model]
         """
         # Multi-Head attention sublayer
         if self.pre_norm:
             src = self.norm_attn(src)
+            if src_kv is not None:
+                src_kv = self.norm_attn(src_kv)
+        if src_kv is None:
+            src_kv = src
+
         ## Multi-Head attention
-        src2, attn = self.self_attn(src, src, src, attn_mask=attn_mask)
-        if self.store_attn:
-            self.attn = attn
+        src2, attn = self.self_attn(src, src_kv, src_kv, attn_mask=attn_mask)
+        # attn: [bs x n_heads x q_len x seq_len]
+
         ## Add & Norm
         src = src + self.dropout_attn(src2)  # Add: residual connection with residual dropout
         if not self.pre_norm:
@@ -196,5 +219,19 @@ class TransformerEncoderLayer(nn.Module):
         src = src + self.dropout_ffn(src2)  # Add: residual connection with residual dropout
         if not self.pre_norm:
             src = self.norm_ffn(src)
+
+        # Store attention weights
+        if self.store_attn:
+            if (self.attn is None) or (self.src_kv is None):
+                self.attn = attn
+            else:
+                self.attn = torch.cat([self.attn, attn], dim=-1)
+
+        # cache if requested
+        if cache:
+            if self.src_kv is None:
+                self.src_kv = src
+            else:
+                self.src_kv = torch.cat([self.src_kv, src], dim=1)
 
         return src

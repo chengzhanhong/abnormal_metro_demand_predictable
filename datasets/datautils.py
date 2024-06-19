@@ -7,21 +7,45 @@ import pandas as pd
 from torch.utils.data import DataLoader, Dataset, Sampler
 import warnings
 import random
+from models.basics import *
+
+basic_infos = {
+               'dropout' : 0.05,
+               'attn_dropout' : 0.05,
+               'head_dropout' : 0.05,
+               'max_lr' : 0.001,
+               'patience' : 5,
+               'anneal_strategy' : 'linear',
+               'batch_size' : 128,
+               'd_model' : 128,
+               'n_heads' : 8,
+               'n_layers' : 3,
+               'attn_mask_type' : 'time',
+               'pre_norm' : True,
+               'pe' : 'zeros',  # intial values of positional encoding
+               'learn_pe' : True,  # learn positional encoding
+               'div_factor' : 1e4,  # initial warmup learning rate : max_lr / div_factor
+               'final_div_factor' : 1,  # final learning rate : initial_lr / final_div_factor
+               'input_emb_size' : 8,
+               'max_leap_rate' : 0.1,
+               'initial_num_bins' : 1024,
+               'train_method' : None,
+}
 
 data_infos = {'guangzhou': {'data_path': '../../data/GuangzhouMetro//',
                             'inflow_file': 'in_data.csv',
                             'outflow_file': 'out_data.csv',
                             'start_minute': 360,
                             'end_minute': 1440,
-                            't_resolution': '10T',  # time resolution used in the model
-                            'input_len': 108,
-                            'target_len': 36,  # 6 hours
+                            't_resolution': '15T',  # time resolution used in the model
+                            'input_len': 72,
+                            'target_len': 24,  # 6 hours
                             'test_date_start': '2017-09-15',  # equivalent to 2017-09-16
                             'test_date_end': '2017-10-01',
                             'val_date_start': '2017-09-08',  # equivalent to 2017-09-09
                             'val_date_end': '2017-09-15',
                             'sample_interval':2,  # The skip interval for fast testing
-                            'patch_len':3
+                            'patch_len':1
                             },
               'seoul': {'data_path': '../../data/SeoulMetro/',
                         'inflow_file': 'in_data.csv',
@@ -52,8 +76,8 @@ model_infos = {'DeepAR': {'d_model': 128,
                'ABT_concat': {'d_model': 128,
                               'n_heads': 8,
                               'n_layers': 3,
-                              'dropout': 0.05,
-                              'attn_dropout': 0,
+                              'dropout': 0,
+                              'attn_dropout': 0.05,
                               'n_epochs': 20,
                               'patience': 5,
                               'max_lr': 0.001,
@@ -80,8 +104,49 @@ model_infos = {'DeepAR': {'d_model': 128,
                        'time_eb': True,
                        'seed': 0,
                        'max_run_time': 10,
-                       }
+                       },
+               'ABT2': {'d_model': 128,
+                       'n_heads': 8,
+                       'n_layers': 3,
+                       'dropout': 0.05,
+                       'attn_dropout': 0,
+                       'n_epochs': 20,
+                       'patience': 5,
+                       'max_lr': 0.001,
+                       'anneal_strategy': 'linear',
+                       'datatype': 'ABT',
+                       'station_eb': True,
+                       'weekday_eb': True,
+                       'time_eb': True,
+                       'seed': 0,
+                       'max_run_time': 10,
+                       },
+               'ABT_new': {'d_model': 128,
+                        'n_heads': 8,
+                        'n_layers': 3,
+                        'dropout': 0.05,
+                        'attn_dropout': 0,
+                        'n_epochs': 20,
+                        'patience': 5,
+                        'max_lr': 0.001,
+                        'anneal_strategy': 'linear',
+                        'datatype': 'ABT',
+                        'station_eb': True,
+                        'weekday_eb': True,
+                        'time_eb': True,
+                        'seed': 0,
+                        'max_run_time': 10,
+                        }
                 }
+
+head_infos = {'RMSE': {'standardization' : 'zscore', 'output_type': 'number', 'input_type': 'number'},
+              'NB': {'standardization' : 'meanscale', 'output_type': 'number', 'input_type': 'number'},
+              'logNormal': {'standardization' : 'zscore', 'output_type': 'number', 'input_type': 'number'},
+              'CrossEntropy': {'standardization' : 'none', 'output_type': 'bins', 'top_p': 0.98, 'input_type': 'bins'},
+              'TruncatedNormal': {'standardization' : 'zscore', 'output_type': 'number', 'input_type': 'number'},
+              'Normal': {'standardization' : 'zscore', 'output_type': 'number', 'input_type': 'number'},
+              'MixTruncatedNormal': {'standardization' : 'zscore', 'output_type': 'number', 'input_type': 'number', 'n_mixture': 2},
+              }
 
 def reset_random_seeds(n=1):
     os.environ['PYTHONHASHSEED'] = str(n)
@@ -140,6 +205,7 @@ class MetroDataset_base(Dataset):
         self.station_eb = args.station_eb
         self.weekday_eb = args.weekday_eb
         self.time_eb = args.time_eb
+        self.test_mode = False
 
         if f_index is None:
             self.f_index, _ = self.get_feasible_index()
@@ -180,6 +246,8 @@ class MetroDataset_base(Dataset):
     def get_data_from_ts(self, time, station):
         """Get data from time and station."""
         # Test whether the time and station is feasible and valid.
+        test_mode = self.test_mode
+        self.test_mode = True
         index_now = self.data[(self.data.time == time) & (self.data.station == station)].index.values[0]
         index_start = index_now - self.input_len
         if index_start not in self._index:
@@ -190,26 +258,49 @@ class MetroDataset_base(Dataset):
 
         # Get the location of index in self._index.
         index = np.where(self._index == index_start)[0][0]
-        x, y, is_abnormal = self.__getitem__(index)
-        return (x, y, is_abnormal), data_piece
+        x, y, abnormal = self.__getitem__(index)
+        self.test_mode = test_mode
+        return (x, y, abnormal), data_piece
 
 
 class MetroDataset_total(MetroDataset_base):
-    def __init__(self, data, args, f_index=None, datatype='seq'):
-        self.data = data.sort_values(['station', 'time']).reset_index(drop=True)
-        super(MetroDataset_total, self).__init__(self.data, args, f_index)
+    def __init__(self, data, args, f_index=None):
+        data.sort_values(['station', 'time'],inplace=True)
+        data.reset_index(drop=True, inplace=True)
+        self.raw_data = data
+        self.train_idx, self.val_idx, self.test_idx = get_train_val_test_index(self.raw_data, args)
+        self.bin_data = data.copy()
+        self.input_type = args.input_type  # 'number' or "bins"
+        self.output_type = args.output_type  # 'number' or "bins"
+
+        if args.output_type == 'bins' or args.input_type == 'bins':
+            self.bin_edges, self.num_per_bin, _ = get_quantile_edges(self.bin_data.loc[self.train_idx, ['inflow', 'outflow']].values.flatten(),
+                                                args.initial_num_bins, args.max_leap_rate, plot=False)
+            self.bin_data['outflow'] = self.bin_data.outflow.apply(lambda x: num2bin(x, self.bin_edges))
+            self.bin_data['inflow'] = self.bin_data.inflow.apply(lambda x: num2bin(x, self.bin_edges))
+            self.bin_data['outflow'] = self.bin_data.outflow.astype('int64')
+            self.bin_data['inflow'] = self.bin_data.inflow.astype('int64')
+            self.bin_weights = self.num_per_bin.sum()/(self.num_per_bin * len(self.num_per_bin))
+        else:
+            self.bin_edges = np.array([0])
+            self.bin_data = None
+            self.bin_weights = 1
+        self.num_bins = len(self.bin_edges) - 1
+
+        super(MetroDataset_total, self).__init__(self.raw_data, args, f_index)
 
         datatype_dict = {'ABT': MetroDataset_deepar,
+                         'ABT2': MetroDataset_deepar,
                          'DeepAR': MetroDataset_deepar,
-                         'ABT_concat': MetroDataset_deepar  # ABT_concat uses the same data structure as DeepAR
+                         'ABT_concat': MetroDataset_deepar,  # ABT_concat uses the same data structure as DeepAR
+                         'ABT_new': MetroDataset_deepar,
                          }
-        child_dataset = datatype_dict[datatype]
+        child_dataset = datatype_dict[args.model]
 
         # Get train, val, test Dataset
-        self.train_idx, self.val_idx, self.test_idx = get_train_val_test_index(data, args)
-        self.TrainDataset = child_dataset(data, args, np.intersect1d(self.train_idx, self.f_index))
-        self.ValDataset = child_dataset(data, args, np.intersect1d(self.val_idx, self.f_index))
-        self.TestDataset = child_dataset(data, args, np.intersect1d(self.test_idx, self.f_index))
+        self.TrainDataset = child_dataset(self.raw_data, self.bin_data, args, np.intersect1d(self.train_idx, self.f_index))
+        self.ValDataset = child_dataset(self.raw_data, self.bin_data, args, np.intersect1d(self.val_idx, self.f_index))
+        self.TestDataset = child_dataset(self.raw_data, self.bin_data, args, np.intersect1d(self.test_idx, self.f_index))
 
     def get_data_from_ts(self, time, station, method='target', mask_ratio=0.2):
         """Get input and target from a specific time and station."""
@@ -233,19 +324,32 @@ class MetroDataset_total(MetroDataset_base):
 
 
 class MetroDataset_deepar(MetroDataset_base):
-    def __init__(self, data, args, f_index=None):
-        super(MetroDataset_deepar, self).__init__(data, args, f_index)
-        self.return_abnormal = False
+    def __init__(self, raw_data, bin_data, args, f_index=None):
+        super(MetroDataset_deepar, self).__init__(raw_data, args, f_index)
+        self.raw_data = raw_data
+        self.bin_data = bin_data
+        self.input_type = args.input_type  # 'number' or "bins"
+        self.output_type = args.output_type  # 'number' or "bins"
 
     def __getitem__(self, index):
-        data_piece = self.data.iloc[self.f_index[index]:self.f_index[index] + self.sample_len, :]
-        outflow_data = torch.from_numpy(data_piece.outflow.values[:]).unfold(0, self.patch_len, self.patch_len)
-        inflow_data = torch.from_numpy(data_piece.inflow.values[:]).unfold(0, self.patch_len, self.patch_len)
-        target = torch.cat((inflow_data[1:, :], outflow_data[1:, :]), dim=1)
-        input = torch.cat((inflow_data[:-1, :], outflow_data[:-1, :]), dim=1)
+        # the input data
+        if self.input_type == 'bins':
+            bin_data_piece = self.bin_data.iloc[self.f_index[index]:self.f_index[index] + self.sample_len, :]
+            bin_inflow = torch.from_numpy(bin_data_piece.inflow.values[:]).unfold(0, self.patch_len, self.patch_len)
+            bin_outflow = torch.from_numpy(bin_data_piece.outflow.values[:]).unfold(0, self.patch_len, self.patch_len)
+            input = torch.cat((bin_inflow[:-1, :], bin_outflow[:-1, :]), dim=1)
+        elif self.input_type == 'number':
+            data_piece = self.raw_data.iloc[self.f_index[index]:self.f_index[index] + self.sample_len, :]
+            inflow = torch.from_numpy(data_piece.inflow.values[:]).unfold(0, self.patch_len, self.patch_len)
+            outflow = torch.from_numpy(data_piece.outflow.values[:]).unfold(0, self.patch_len, self.patch_len)
+            input = torch.cat((inflow[:-1, :], outflow[:-1, :]), dim=1)
+        else:
+            raise ValueError('Invalid input type. input_type should be "number" or "bins"')
 
+        # Get features
         inputs = [input]
-        features = torch.from_numpy(data_piece[['station', 'weekday', 'time_in_day']].values[self.patch_len-1::self.patch_len])
+        data = data_piece if 'data_piece' in locals() else bin_data_piece
+        features = torch.from_numpy(data[['station', 'weekday', 'time_in_day']].values[self.patch_len-1::self.patch_len])
         if self.station_eb:
             inputs.append(features[:-1, 0])
         if self.weekday_eb:
@@ -253,11 +357,28 @@ class MetroDataset_deepar(MetroDataset_base):
         if self.time_eb:
             inputs.append(features[:-1, 2])
 
-        if self.return_abnormal:  # Whether to return abnormal maker for the target, especially during testing
-            abnormal_in = torch.from_numpy(data_piece.abnormal_in.values[:]).unfold(0, self.patch_len, self.patch_len)
-            abnormal_out = torch.from_numpy(data_piece.abnormal_out.values[:]).unfold(0, self.patch_len, self.patch_len)
+        # Get output data
+        if self.output_type == 'bins' and not self.test_mode:
+            if "bin_data_piece" not in locals():
+                bin_data_piece = self.bin_data.iloc[self.f_index[index]:self.f_index[index] + self.sample_len, :]
+                bin_inflow = torch.from_numpy(bin_data_piece.inflow.values[:]).unfold(0, self.patch_len, self.patch_len)
+                bin_outflow = torch.from_numpy(bin_data_piece.outflow.values[:]).unfold(0, self.patch_len, self.patch_len)
+            target = torch.cat((bin_inflow[1:, :], bin_outflow[1:, :]), dim=1)
+        elif self.output_type == 'number' or self.test_mode:
+            if "data_piece" not in locals():
+                data_piece = self.raw_data.iloc[self.f_index[index]:self.f_index[index] + self.sample_len, :]
+                inflow = torch.from_numpy(data_piece.inflow.values[:]).unfold(0, self.patch_len, self.patch_len)
+                outflow = torch.from_numpy(data_piece.outflow.values[:]).unfold(0, self.patch_len, self.patch_len)
+            target = torch.cat((inflow[1:, :], outflow[1:, :]), dim=1)
+        else:
+            raise ValueError('Invalid output type. output_type should be "number" or "bins"')
+
+        # Whether to return abnormal maker for the target, which is needed during testing
+        if self.test_mode:
+            data = data_piece if 'data_piece' in locals() else bin_data_piece
+            abnormal_in = torch.from_numpy(data.abnormal_in.values[:]).unfold(0, self.patch_len, self.patch_len)
+            abnormal_out = torch.from_numpy(data.abnormal_out.values[:]).unfold(0, self.patch_len, self.patch_len)
             abnormal = torch.cat((abnormal_in[1:, :], abnormal_out[1:, :]), dim=1)
             return tuple(inputs), target, abnormal
         else:
             return tuple(inputs), target
-

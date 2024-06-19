@@ -134,7 +134,7 @@ args.default_int = 'int32'
 torch.set_default_dtype(torch.float32)
 args.default_float = 'float32'
 args.stride = 1
-args.dset = "seoul"
+args.dset = "guangzhou"
 data_info = data_infos[args.dset]
 vars(args).update(data_info)
 data = read_data(args)
