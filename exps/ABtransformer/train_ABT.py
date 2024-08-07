@@ -15,7 +15,7 @@ from torch.utils.data import DataLoader, RandomSampler
 #%% Define arguments & prepare data
 args.dset = "seoul"  # "seoul" or "guangzhou"
 vars(args).update(data_infos[args.dset])
-args.model = 'ABT_new'
+args.model = 'ABT'
 vars(args).update(model_infos[args.model])
 for head_type in ['TruncatedNormal', 'CrossEntropy','MixTruncatedNormal']:
     args.head_type = head_type  # 'RMSE' or 'NB' or CrossEntropy, TruncatedNormal, Normal, MixTruncatedNormal
@@ -71,7 +71,7 @@ for head_type in ['TruncatedNormal', 'CrossEntropy','MixTruncatedNormal']:
 
 
     # %% Train model
-    wandb.login(key='cbe60bf4ccd8041b9a7b7f2946a1c63c85a56a69')
+    wandb.login()
     reset_random_seeds(args.seed)
     model = ABTransformer(x_loc=x_loc, x_scale=x_scale, attn_mask=attn_mask, **vars(args))
     model = train_model(args, train_loader, val_loader, test_loader, model, device=device)

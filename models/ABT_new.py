@@ -1,8 +1,9 @@
-# Notice I used the same affine transform for both the inflow and outflow in ABT, which restricts the output space
+# Notice I used the same affine transform for both the inflow and outflow in ABT.py, and the in/out-flow is
+# differentiated by a flow-embedding, which restricts the output space
 # Here in ABT2, I use different affine transforms for inflow and outflow, and remove the flow type embedding
 from .pos_encoding import *
 from .basics import *
-from .transformer3 import *
+from .transformer import *
 
 class ABTransformer(nn.Module):
     def __init__(self, patch_len: int, num_patch: int, num_target_patch, num_embeds: tuple = (2, 159, 7, 217),

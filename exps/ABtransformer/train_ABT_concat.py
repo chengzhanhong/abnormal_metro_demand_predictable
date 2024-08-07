@@ -1,6 +1,4 @@
 #%% Forecast alighting and boarding together but in a concatenated way
-import time, datetime
-
 import sys
 import os
 cwd = os.getcwd()
@@ -32,7 +30,6 @@ for dset in ['guangzhou']:
 
         args.n_mixture = 3
         args.weighted_loss = False
-        # args.d_model = 128*args.n_heads
         args.d_ff = 256
         # args.initial_num_bins = 1024
         args.pe = 'rotary'
@@ -78,7 +75,7 @@ for dset in ['guangzhou']:
 
 
         #%% Train model
-        wandb.login(key='cbe60bf4ccd8041b9a7b7f2946a1c63c85a56a69')
+        wandb.login()
         reset_random_seeds(args.seed)
         model = ABTransformer_concat(x_loc=x_loc, x_scale=x_scale, attn_mask=attn_mask, **vars(args))
         model = train_model(args, train_loader, val_loader, test_loader, model, device=device)

@@ -1,6 +1,6 @@
 from .pos_encoding import *
 from .basics import *
-from .transformer3 import *
+from .transformer import *
 
 
 class ABTransformer_concat(nn.Module):
