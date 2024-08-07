@@ -22,7 +22,7 @@ basic_infos = {
                'n_layers' : 3,
                'attn_mask_type' : 'time',
                'pre_norm' : True,
-               'pe' : 'zeros',  # intial values of positional encoding
+               'pe' : 'zeros',  # intial values of positional encoding, 'rotary'
                'learn_pe' : True,  # learn positional encoding
                'div_factor' : 1e4,  # initial warmup learning rate : max_lr / div_factor
                'final_div_factor' : 1,  # final learning rate : initial_lr / final_div_factor
@@ -38,13 +38,14 @@ data_infos = {'guangzhou': {'data_path': '../../data/GuangzhouMetro//',
                             'start_minute': 360,
                             'end_minute': 1440,
                             't_resolution': '15T',  # time resolution used in the model
-                            'input_len': 72,
-                            'target_len': 24,  # 6 hours
+                            'input_len': 144,
+                            'target_len': 48,
                             'test_date_start': '2017-09-15',  # equivalent to 2017-09-16
                             'test_date_end': '2017-10-01',
                             'val_date_start': '2017-09-08',  # equivalent to 2017-09-09
                             'val_date_end': '2017-09-15',
-                            'sample_interval':2,  # The skip interval for fast testing
+                            'sample_interval':1,  # The skip interval for fast testing
+                            'sample_divide':4,
                             'patch_len':1
                             },
               'seoul': {'data_path': '../../data/SeoulMetro/',
@@ -53,14 +54,15 @@ data_infos = {'guangzhou': {'data_path': '../../data/GuangzhouMetro//',
                         'start_minute': 240,
                         'end_minute': 1381,
                         't_resolution': '60T',  # time resolution used in the model
-                        'input_len': 20,
-                        'target_len': 6,  # 6 hours
+                        'input_len': 40,
+                        'target_len': 12,
                         'test_date_start': '2023-06-09',  # equivalent to 2023-06-10
                         'test_date_end': '2023-07-01',
                         'val_date_start': '2023-05-31',  # equivalent to 2023-06-01
                         'val_date_end': '2023-06-09',
                         'sample_interval': 1,  # The skip interval for fast testing
-                        'patch_len':1
+                        'patch_len':1,
+                        'sample_divide':4,
                         },
               }
 
@@ -136,7 +138,19 @@ model_infos = {'DeepAR': {'d_model': 128,
                         'time_eb': True,
                         'seed': 0,
                         'max_run_time': 10,
-                        }
+                        },
+               'Nlinear':{
+                   'station_eb': True,
+                   'weekday_eb': True,
+                   'time_eb': True,
+                   'n_epochs': 20,
+                   'patience': 5,
+                   'max_lr': 0.001,
+                   'seed': 0,
+                   'max_run_time': 10,
+                   'd_model': 128,
+                   'dropout': 0.05,
+               }
                 }
 
 head_infos = {'RMSE': {'standardization' : 'zscore', 'output_type': 'number', 'input_type': 'number'},
@@ -146,6 +160,7 @@ head_infos = {'RMSE': {'standardization' : 'zscore', 'output_type': 'number', 'i
               'TruncatedNormal': {'standardization' : 'zscore', 'output_type': 'number', 'input_type': 'number'},
               'Normal': {'standardization' : 'zscore', 'output_type': 'number', 'input_type': 'number'},
               'MixTruncatedNormal': {'standardization' : 'zscore', 'output_type': 'number', 'input_type': 'number', 'n_mixture': 2},
+              'MixTruncatedNormal2': {'standardization' : 'zscore', 'output_type': 'number', 'input_type': 'number', 'n_mixture': 2},
               }
 
 def reset_random_seeds(n=1):
@@ -272,6 +287,7 @@ class MetroDataset_total(MetroDataset_base):
         self.bin_data = data.copy()
         self.input_type = args.input_type  # 'number' or "bins"
         self.output_type = args.output_type  # 'number' or "bins"
+        self.forecast_target = args.forecast_target
 
         if args.output_type == 'bins' or args.input_type == 'bins':
             self.bin_edges, self.num_per_bin, _ = get_quantile_edges(self.bin_data.loc[self.train_idx, ['inflow', 'outflow']].values.flatten(),
@@ -294,13 +310,17 @@ class MetroDataset_total(MetroDataset_base):
                          'DeepAR': MetroDataset_deepar,
                          'ABT_concat': MetroDataset_deepar,  # ABT_concat uses the same data structure as DeepAR
                          'ABT_new': MetroDataset_deepar,
+                         'Nlinear': MetroDataset_seq2seq,
                          }
         child_dataset = datatype_dict[args.model]
 
         # Get train, val, test Dataset
-        self.TrainDataset = child_dataset(self.raw_data, self.bin_data, args, np.intersect1d(self.train_idx, self.f_index))
-        self.ValDataset = child_dataset(self.raw_data, self.bin_data, args, np.intersect1d(self.val_idx, self.f_index))
-        self.TestDataset = child_dataset(self.raw_data, self.bin_data, args, np.intersect1d(self.test_idx, self.f_index))
+        self.TrainDataset = child_dataset(self.raw_data, self.bin_data, args,
+                                          np.intersect1d(self.train_idx, self.f_index), forecast_target=args.forecast_target)
+        self.ValDataset = child_dataset(self.raw_data, self.bin_data, args,
+                                        np.intersect1d(self.val_idx, self.f_index), forecast_target=args.forecast_target)
+        self.TestDataset = child_dataset(self.raw_data, self.bin_data, args,
+                                         np.intersect1d(self.test_idx, self.f_index), forecast_target=args.forecast_target)
 
     def get_data_from_ts(self, time, station, method='target', mask_ratio=0.2):
         """Get input and target from a specific time and station."""
@@ -324,12 +344,13 @@ class MetroDataset_total(MetroDataset_base):
 
 
 class MetroDataset_deepar(MetroDataset_base):
-    def __init__(self, raw_data, bin_data, args, f_index=None):
+    def __init__(self, raw_data, bin_data, args, f_index=None, forecast_target='both'):
         super(MetroDataset_deepar, self).__init__(raw_data, args, f_index)
         self.raw_data = raw_data
         self.bin_data = bin_data
         self.input_type = args.input_type  # 'number' or "bins"
         self.output_type = args.output_type  # 'number' or "bins"
+        self.forecast_target = forecast_target
 
     def __getitem__(self, index):
         # the input data
@@ -337,12 +358,22 @@ class MetroDataset_deepar(MetroDataset_base):
             bin_data_piece = self.bin_data.iloc[self.f_index[index]:self.f_index[index] + self.sample_len, :]
             bin_inflow = torch.from_numpy(bin_data_piece.inflow.values[:]).unfold(0, self.patch_len, self.patch_len)
             bin_outflow = torch.from_numpy(bin_data_piece.outflow.values[:]).unfold(0, self.patch_len, self.patch_len)
-            input = torch.cat((bin_inflow[:-1, :], bin_outflow[:-1, :]), dim=1)
+            if self.forecast_target == 'inflow':
+                input = bin_inflow[:-1, :]
+            elif self.forecast_target == 'outflow':
+                input = bin_outflow[:-1, :]
+            else:
+                input = torch.cat((bin_inflow[:-1, :], bin_outflow[:-1, :]), dim=1)
         elif self.input_type == 'number':
             data_piece = self.raw_data.iloc[self.f_index[index]:self.f_index[index] + self.sample_len, :]
             inflow = torch.from_numpy(data_piece.inflow.values[:]).unfold(0, self.patch_len, self.patch_len)
             outflow = torch.from_numpy(data_piece.outflow.values[:]).unfold(0, self.patch_len, self.patch_len)
-            input = torch.cat((inflow[:-1, :], outflow[:-1, :]), dim=1)
+            if self.forecast_target == 'inflow':
+                input = inflow[:-1, :]
+            elif self.forecast_target == 'outflow':
+                input = outflow[:-1, :]
+            else:
+                input = torch.cat((inflow[:-1, :], outflow[:-1, :]), dim=1)
         else:
             raise ValueError('Invalid input type. input_type should be "number" or "bins"')
 
@@ -363,13 +394,23 @@ class MetroDataset_deepar(MetroDataset_base):
                 bin_data_piece = self.bin_data.iloc[self.f_index[index]:self.f_index[index] + self.sample_len, :]
                 bin_inflow = torch.from_numpy(bin_data_piece.inflow.values[:]).unfold(0, self.patch_len, self.patch_len)
                 bin_outflow = torch.from_numpy(bin_data_piece.outflow.values[:]).unfold(0, self.patch_len, self.patch_len)
-            target = torch.cat((bin_inflow[1:, :], bin_outflow[1:, :]), dim=1)
+            if self.forecast_target == 'inflow':
+                target = bin_inflow[1:, :]
+            elif self.forecast_target == 'outflow':
+                target = bin_outflow[1:, :]
+            else:
+                target = torch.cat((bin_inflow[1:, :], bin_outflow[1:, :]), dim=1)
         elif self.output_type == 'number' or self.test_mode:
             if "data_piece" not in locals():
                 data_piece = self.raw_data.iloc[self.f_index[index]:self.f_index[index] + self.sample_len, :]
                 inflow = torch.from_numpy(data_piece.inflow.values[:]).unfold(0, self.patch_len, self.patch_len)
                 outflow = torch.from_numpy(data_piece.outflow.values[:]).unfold(0, self.patch_len, self.patch_len)
-            target = torch.cat((inflow[1:, :], outflow[1:, :]), dim=1)
+            if self.forecast_target == 'inflow':
+                target = inflow[1:, :]
+            elif self.forecast_target == 'outflow':
+                target = outflow[1:, :]
+            else:
+                target = torch.cat((inflow[1:, :], outflow[1:, :]), dim=1)
         else:
             raise ValueError('Invalid output type. output_type should be "number" or "bins"')
 
@@ -378,7 +419,62 @@ class MetroDataset_deepar(MetroDataset_base):
             data = data_piece if 'data_piece' in locals() else bin_data_piece
             abnormal_in = torch.from_numpy(data.abnormal_in.values[:]).unfold(0, self.patch_len, self.patch_len)
             abnormal_out = torch.from_numpy(data.abnormal_out.values[:]).unfold(0, self.patch_len, self.patch_len)
-            abnormal = torch.cat((abnormal_in[1:, :], abnormal_out[1:, :]), dim=1)
+            if self.forecast_target == 'inflow':
+                abnormal = abnormal_in[1:, :]
+            elif self.forecast_target == 'outflow':
+                abnormal = abnormal_out[1:, :]
+            else:
+                abnormal = torch.cat((abnormal_in[1:, :], abnormal_out[1:, :]), dim=1)
             return tuple(inputs), target, abnormal
         else:
             return tuple(inputs), target
+
+class MetroDataset_seq2seq(MetroDataset_base):
+    # The dataset designed for model that forecast multistep feature values jointly.
+    def __init__(self, raw_data, bin_data, args, f_index=None, forecast_target='both'):
+        super(MetroDataset_seq2seq, self).__init__(raw_data, args, f_index)
+        self.raw_data = raw_data
+        self.forecast_target = forecast_target
+
+    def __getitem__(self, index):
+        # the input data
+        data_piece = self.raw_data.iloc[self.f_index[index]:self.f_index[index] + self.sample_len, :]
+        inflow = torch.from_numpy(data_piece.inflow.values[:]).unfold(0, self.patch_len, self.patch_len)
+        outflow = torch.from_numpy(data_piece.outflow.values[:]).unfold(0, self.patch_len, self.patch_len)
+        if self.forecast_target == 'inflow':
+            input = inflow[:self.input_len, :]
+            target = inflow[-self.target_len:, :]
+        elif self.forecast_target == 'outflow':
+            input = outflow[:self.input_len, :]
+            target = outflow[-self.target_len:, :]
+        else:
+            input = torch.cat((inflow[:self.input_len, :], outflow[:self.input_len, :]), dim=1)
+            target = torch.cat((inflow[-self.target_len:, :], outflow[-self.target_len:, :]), dim=1)
+
+        # Get features
+        inputs = [input]
+        data = data_piece
+        features = torch.from_numpy(data[['station', 'weekday', 'time_in_day']].values[self.patch_len-1::self.patch_len])
+        if self.station_eb:
+            inputs.append(features[-self.target_len:, 0])
+        if self.weekday_eb:
+            inputs.append(features[-self.target_len:, 1])
+        if self.time_eb:
+            inputs.append(features[-self.target_len:, 2])
+
+        if self.test_mode:
+            data = data_piece
+            abnormal_in = torch.from_numpy(data.abnormal_in.values[:]).unfold(0, self.patch_len, self.patch_len)
+            abnormal_out = torch.from_numpy(data.abnormal_out.values[:]).unfold(0, self.patch_len, self.patch_len)
+            if self.forecast_target == 'inflow':
+                abnormal = abnormal_in[-self.target_len:, :]
+            elif self.forecast_target == 'outflow':
+                abnormal = abnormal_out[-self.target_len:, :]
+            else:
+                abnormal = torch.cat((abnormal_in[-self.target_len:, :], abnormal_out[-self.target_len:, :]), dim=1)
+            return tuple(inputs), target, abnormal
+        else:
+            return tuple(inputs), target
+
+
+

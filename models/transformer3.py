@@ -6,24 +6,35 @@ import torch.nn.functional as F
 from typing import Optional
 import numpy as np
 from .basics import get_activation_fn, Transpose
+from rotary_embedding_torch import RotaryEmbedding
 
 class MultiheadAttention(nn.Module):
-    def __init__(self, d_model, n_heads, d_k=None, d_v=None, attn_dropout=0., proj_dropout=0., qkv_bias=True):
+    def __init__(self, d_model, n_heads, d_k=None, d_v=None,
+                 attn_dropout=0., proj_dropout=0.,
+                 qkv_bias=True, pe='rotary', encoder_type='ABT'):
         """Multi Head Attention Layer
         Input shape:
             Q:       [batch_size (bs) x max_q_len x d_model]
             K, V:    [batch_size (bs) x q_len x d_model]
             mask:    [q_len x q_len]
+            channel: 'one' or 'two', one means concat inflow and outflow,
+                        two means separate inflow and outflow
         """
         super().__init__()
         d_k = d_model // n_heads if d_k is None else d_k
         d_v = d_model // n_heads if d_v is None else d_v
 
         self.n_heads, self.d_k, self.d_v = n_heads, d_k, d_v
+        self.encoder_type = encoder_type
 
         self.W_Q = nn.Linear(d_model, d_k * n_heads, bias=qkv_bias)
         self.W_K = nn.Linear(d_model, d_k * n_heads, bias=qkv_bias)
         self.W_V = nn.Linear(d_model, d_v * n_heads, bias=qkv_bias)
+
+        if pe == 'rotary':
+            self.rotary = RotaryEmbedding(d_k)
+        elif pe == 'rotary_half':
+            self.rotary = RotaryEmbedding(d_k//2)
 
         # Scaled Dot-Product Attention (multiple heads)
         self.sdp_attn = ScaledDotProductAttention(d_model, n_heads, attn_dropout=attn_dropout)
@@ -41,10 +52,24 @@ class MultiheadAttention(nn.Module):
 
         # Linear (+ split in multiple heads)
         q_s = self.W_Q(Q).view(bs, -1, self.n_heads, self.d_k).transpose(1,2)       # q_s    : [bs x n_heads x max_q_len x d_k]
-        k_s = self.W_K(K).view(bs, -1, self.n_heads, self.d_k).permute(0,2,3,1)     # k_s    : [bs x n_heads x d_k x q_len] - transpose(1,2) + transpose(2,3)
+        k_s = self.W_K(K).view(bs, -1, self.n_heads, self.d_k).transpose(1,2)       # k_s    : [bs x n_heads x q_len x d_k]
         v_s = self.W_V(V).view(bs, -1, self.n_heads, self.d_v).transpose(1,2)       # v_s    : [bs x n_heads x q_len x d_v]
 
+        if hasattr(self, 'rotary'):
+            if self.encoder_type == 'ABT_concat':
+                q_s, k_s = self.rotary.rotate_queries_with_cached_keys(q_s, k_s)
+            elif self.encoder_type == 'ABT':
+                q_s_in, q_s_out = q_s.chunk(2, dim=-2)
+                k_s_in, k_s_out = k_s.chunk(2, dim=-2)
+                q_s_in, k_s_in = self.rotary.rotate_queries_with_cached_keys(q_s_in, k_s_in)
+                q_s_out, k_s_out = self.rotary.rotate_queries_with_cached_keys(q_s_out, k_s_out)
+                q_s = torch.cat((q_s_in, q_s_out), dim=-2)
+                k_s = torch.cat((k_s_in, k_s_out), dim=-2)
+            else:
+                raise NotImplementedError(f"Encoder type {self.encoder_type} not implemented")
+
         # Apply Scaled Dot-Product Attention (multiple heads)
+        k_s = k_s.transpose(2, 3)  # k_s    : [bs x n_heads x d_k x q_len]
         output, attn_weights = self.sdp_attn(q_s, k_s, v_s, key_padding_mask=key_padding_mask, attn_mask=attn_mask)
         # output: [bs x n_heads x q_len x d_v], attn: [bs x n_heads x q_len x q_len], scores: [bs x n_heads x max_q_len x q_len]
 
@@ -113,23 +138,31 @@ class ScaledDotProductAttention(nn.Module):
 class TransformerEncoder(nn.Module):
     def __init__(self, d_model, n_heads, d_ff=None,
                  norm='BatchNorm', attn_dropout=0., dropout=0., activation='gelu',
-                 n_layers=1, pre_norm=False, store_attn=False):
+                 n_layers=1, pre_norm=False, store_attn=False, pe='rotary', encoder_type='ABT'):
+        """encoder_type: 'ABT' or 'ABT_concat'"""
         super().__init__()
 
         self.layers = nn.ModuleList([TransformerEncoderLayer(d_model, n_heads=n_heads, d_ff=d_ff, norm=norm,
                                                              attn_dropout=attn_dropout, dropout=dropout,
-                                                             activation=activation,
-                                                             pre_norm=pre_norm, store_attn=store_attn) for i in
+                                                             activation=activation, pre_norm=pre_norm,
+                                                             store_attn=store_attn, pe=pe, encoder_type=encoder_type) for i in
                                      range(n_layers)])
         self.previous_cache = None
+        self.encoder_type = encoder_type
     def forward(self, src: Tensor, attn_mask=None, cache=False):
         """
         src: tensor [bs x q_len x d_model]
         """
         # Retrieve the cache if available
         if cache and (self.previous_cache is not None):
-            src_kv = torch.cat([self.previous_cache, src], dim=1)
-            self.previous_cache = src_kv
+            if self.encoder_type == 'ABT_concat':
+                src_kv = torch.cat([self.previous_cache, src], dim=1)
+                self.previous_cache = src_kv
+            elif self.encoder_type == 'ABT':
+                src_kv1, src_kv2 = self.previous_cache.chunk(2, dim=1)
+                src1, src2 = src.chunk(2, dim=1)
+                src_kv = torch.cat([src_kv1, src1, src_kv2, src2], dim=1)
+                self.previous_cache = src_kv
         else:
             src_kv = src
             if cache:
@@ -149,7 +182,7 @@ class TransformerEncoder(nn.Module):
 class TransformerEncoderLayer(nn.Module):
     def __init__(self, d_model, n_heads, d_ff=256, store_attn=False,
                  norm='BatchNorm', attn_dropout=0., dropout=0., bias=True,
-                 activation="gelu", pre_norm=False):
+                 activation="gelu", pre_norm=False, pe='rotary', encoder_type='ABT'):
         """pre_norm: if True, apply normalization before residual and multi-head attention."""
         super().__init__()
         assert not d_model % n_heads, f"d_model ({d_model}) must be divisible by n_heads ({n_heads})"
@@ -157,7 +190,8 @@ class TransformerEncoderLayer(nn.Module):
         d_v = d_model // n_heads
 
         # Multi-Head attention
-        self.self_attn = MultiheadAttention(d_model, n_heads, d_k, d_v, attn_dropout=attn_dropout, proj_dropout=dropout)
+        self.self_attn = MultiheadAttention(d_model, n_heads, d_k, d_v, attn_dropout=attn_dropout,
+                                            proj_dropout=dropout, pe=pe, encoder_type=encoder_type)
 
         # Add & Norm
         self.dropout_attn = nn.Dropout(dropout)
@@ -187,6 +221,7 @@ class TransformerEncoderLayer(nn.Module):
         self.store_attn = store_attn
         self.src_kv = None
         self.attn = None
+        self.encoder_type = encoder_type
 
     def forward(self, src: Tensor, src_kv:Optional[Tensor]=None, attn_mask:Optional[Tensor]=None, cache=False):
         """
@@ -223,15 +258,20 @@ class TransformerEncoderLayer(nn.Module):
         # Store attention weights
         if self.store_attn:
             if (self.attn is None) or (self.src_kv is None):
-                self.attn = attn
+                self.attn = [attn]
             else:
-                self.attn = torch.cat([self.attn, attn], dim=-1)
+                self.attn = self.attn + [attn]
 
         # cache if requested
         if cache:
             if self.src_kv is None:
                 self.src_kv = src
             else:
-                self.src_kv = torch.cat([self.src_kv, src], dim=1)
+                if self.encoder_type == 'ABT_concat':
+                    self.src_kv = torch.cat([self.src_kv, src], dim=1)
+                elif self.encoder_type == 'ABT':
+                    src_kv1, src_kv2 = self.src_kv.chunk(2, dim=1)
+                    src1, src2 = src.chunk(2, dim=1)
+                    self.src_kv = torch.cat([src_kv1, src1, src_kv2, src2], dim=1)
 
         return src

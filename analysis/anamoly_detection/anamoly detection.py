@@ -9,7 +9,7 @@ from utilities.basics import *
 import numpy as np
 import rpca.ealm
 from datasets.datautils import *
-
+plt.rcParams.update({'ytick.direction': 'in', 'xtick.direction': 'in'})
 
 def drop_midnight(data, start_minute, end_minute):
     """
@@ -58,8 +58,32 @@ def get_station_abnormal_index(data, s=14, flow_type="inflow", neighbor=1, iqr_r
     data_index = data_inflow.index[idx]
 
     if fig:
-        plt.matshow(inflow, aspect='auto')
-        plt.plot(idx2[1],idx2[0], 'o',markerfacecolor='none', markeredgecolor='r', markersize=5)
+        fig0, ax0 = plt.subplots(figsize=(10, 5))
+        cax = ax0.matshow(inflow, aspect='auto', cmap='viridis')
+        ax0.xaxis.set_ticks_position('bottom')
+        # set x-grids on
+        n_weeks = inflow.shape[0]
+        day_length = inflow.shape[1]//7
+        ax0.set_xticks(np.arange(-0.5, 7*day_length+0.5, day_length))
+        ax0.set_xticklabels([])
+        ax0.set_yticks(np.arange(-0.5, n_weeks+0.5, 1))
+        ax0.set_yticklabels([])
+        x_ticks_midpoints = np.arange(0, 7 * day_length, day_length) + day_length / 2
+        ax0.set_xticks(x_ticks_midpoints, minor=True)
+        ax0.set_xticklabels(['Sat', 'Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri'], minor=True)
+        ax0.tick_params(which='minor', length=0)
+        ax0.grid(which='major', color='white', linestyle='--', linewidth=1, alpha=0.2)
+        y_ticks_midpoints = np.arange(0, n_weeks, 1)
+        ax0.set_yticks(y_ticks_midpoints, minor=True)
+        ax0.set_yticklabels(np.arange(1, n_weeks+1), minor=True)
+        ax0.set_ylabel('Weeks')
+        ax0.set_xlabel('Time in a week')
+        ax0.plot(idx2[1],idx2[0], 'o',markerfacecolor='none', markeredgecolor='#eb4034', markersize=6, markeredgewidth=1)
+        axc = fig0.colorbar(cax)
+        axc.set_label('Boardings / 15 min')
+        fig0.set_tight_layout(True)
+        fig0.savefig('inflow_anomaly.pdf')
+
 
         fig, ax = plt.subplots(figsize=(35, 5))
         outflow0 = data.loc[data.station == s, other_flow].values
@@ -69,6 +93,7 @@ def get_station_abnormal_index(data, s=14, flow_type="inflow", neighbor=1, iqr_r
         ax.legend()
         fig.set_tight_layout(True)
         ax.set_xmargin(0)
+        return data_index, fig
     return data_index
 
 
@@ -140,12 +165,14 @@ vars(args).update(data_info)
 data = read_data(args)
 data.head()
 # save to csv
-data.to_csv(data_info['data_path'] + 'data.csv',
-            index=False)
+# data.to_csv(data_info['data_path'] + 'data.csv',
+#             index=False)
 # data = pd.read_csv(data_info['data_path'] + 'data.csv')
 
 #%% Using manual rules to detect abnormal data
 # Guangzhou, s=14, 110, 117, 118, 18
 # Seoul, s=18, 27
-get_station_abnormal_index(data, s=27, neighbor=0, fig=True, flow_type='inflow', iqr_rate=1.5)
+get_station_abnormal_index(data, s=14, neighbor=0, fig=True, flow_type='inflow', iqr_rate=1)
 data.time_in_day.unique()
+import seaborn as sns
+sns.heatmap()

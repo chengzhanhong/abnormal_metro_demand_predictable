@@ -7,7 +7,7 @@ class DeepAR(nn.Module):
     """The deepAR only use the final hidden state of LSTM to predict the next value of a"""
     def __init__(self, num_embeds, d_model, n_layers, num_target_patch, x_loc=None, x_scale=None, patch_len=1,
                  dropout=0.05, head_dropout=0, input_type='number', head_type='RMSE', input_emb_size=8, num_bins=None,
-                 bin_edges=None, top_p=0.9, n_mixture=2, **kwargs):
+                 bin_edges=None, top_p=0.9, n_mixture=2, forecast_target='both', **kwargs):
         '''
         A recurrent network that predicts the future values of a time-dependent variable based on past inputs.
         '''
@@ -22,15 +22,23 @@ class DeepAR(nn.Module):
         self.num_embeds = num_embeds
         self.d_model = d_model
         self.n_layers = n_layers
+        if forecast_target == 'both':
+            factor = 2
+        elif forecast_target in {'inflow', 'outflow'}:
+            factor = 1
+        else:
+            raise ValueError("forecast_target should be 'both', 'inflow', or 'outflow'.")
+
 
         # Standardization
         self.standardization = Standardization(self.x_loc, self.x_scale, input_type, head_type)
 
         # Input encoding: projection of feature vectors onto a d-dim vector space
         if input_type == 'number':
-            self.W_P = nn.Linear(patch_len * 2, d_model)
+            self.W_P = nn.Linear(patch_len * factor, d_model)
         elif input_type == 'bins':
-            self.W_P = nn.Sequential(nn.Embedding(num_bins, input_emb_size), FlattenLastTwoDims(), nn.Linear(input_emb_size*2, d_model))
+            self.W_P = nn.Sequential(nn.Embedding(num_bins, input_emb_size), FlattenLastTwoDims(),
+                                     nn.Linear(input_emb_size*factor, d_model))
 
         # Flow_type, station, weekday, or time_in_day embedding
         self.feature_eb = nn.ModuleList([nn.Embedding(num_embeds[i], d_model) for i in range(len(num_embeds))])
@@ -51,7 +59,7 @@ class DeepAR(nn.Module):
             self.bin2num_map = None
             self.bin_edges = None
 
-        self.head = head_dic[head_type](d_model, patch_len * 2, head_dropout, num_bins=num_bins, n_mixture=n_mixture)
+        self.head = head_dic[head_type](d_model, patch_len * factor, head_dropout, num_bins=num_bins, n_mixture=n_mixture)
         self.mean = mean_dic[head_type](bin2num_map=self.bin2num_map, bin_edges=self.bin_edges, return_type=self.input_type)
         self.sample = sample_dic[head_type](bin_edges=self.bin_edges, top_p=top_p, return_type=self.input_type)
 
@@ -67,7 +75,7 @@ class DeepAR(nn.Module):
             cell ([lstm_layers, batch_size, lstm_hidden_dim]): LSTM c from time step t
         '''
         # Initialization
-        z = x[0]  # z: [bs x num_patch x patch_len*2]
+        z = x[0]  # z: [bs x num_patch x (patch_len or patch_len*2)]
         features = x[1:]
         stations = x[1][:, 0].long()
 
@@ -129,9 +137,15 @@ class DeepAR(nn.Module):
     def forecast_samples(self, x, n=100):
         """Autoregressive forecasting in the test phase, draw n samples
         """
-        result = []
         with torch.no_grad():
-            for i in range(n):
-                result.append(self.forecast(x=x, method='sample'))
-        return torch.stack(result, dim=0)
+            if x[0].shape[0] == 1:
+                xx = [x[0].repeat(n, 1, 1)] + [feature.repeat(n, 1) for feature in x[1:]]
+                result = self.forecast(x=xx, method='sample')
+                return result
+            else:
+                result = []
+                with torch.no_grad():
+                    for i in range(n):
+                        result.append(self.forecast(x=x, method='sample'))
+                return torch.stack(result, dim=0)
 

@@ -111,11 +111,17 @@ class ABTransformer(nn.Module):
     def forecast_samples(self, x, n=100):
         """Autoregressive forecasting in the test phase, draw n samples
         """
-        result = []
         with torch.no_grad():
-            for i in range(n):
-                result.append(self.forecast(x=x, method='sample'))
-        return torch.stack(result, dim=0)
+            if x[0].shape[0] == 1:
+                xx = [x[0].repeat(n, 1, 1)] + [feature.repeat(n, 1) for feature in x[1:]]
+                result = self.forecast(x=xx, method='sample')
+                return result
+            else:
+                result = []
+                with torch.no_grad():
+                    for i in range(n):
+                        result.append(self.forecast(x=x, method='sample'))
+                return torch.stack(result, dim=0)
 
     def reset_cache(self):
         self.backbone.current_pos = None
@@ -154,8 +160,10 @@ class MetroEncoder2(nn.Module):
 
         # Encoder
         self.encoder = TransformerEncoder(d_model, n_heads, d_ff=d_ff, norm=norm, attn_dropout=attn_dropout, dropout=dropout,
-                                          pre_norm=pre_norm, activation=act, n_layers=n_layers, store_attn=store_attn)
+                                          pre_norm=pre_norm, activation=act, n_layers=n_layers, pe=pe,
+                                          store_attn=store_attn, encoder_type='ABT')
         self.current_pos = None
+        self.pe = pe
 
     def forward(self, z, features, attn_mask=None, cache=False) -> Tensor:
         """
@@ -178,7 +186,10 @@ class MetroEncoder2(nn.Module):
         else:
             self.current_pos = None
             z_slice = slice(0, z_len)
-        z = z + self.W_pos[z_slice, :].repeat(2, 1)
+
+        if self.pe == 'zeros' or self.pe == 'sincos':
+            z = z + self.W_pos[z_slice, :].repeat(2, 1)
+            # skip None positional encoding, rotary positional embedding is applied in attention layers
 
         # feature encoding
         features = [f.repeat(1, 2) for f in features]

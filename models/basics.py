@@ -106,13 +106,14 @@ class Standardization(nn.Module):
             elif self.head in {'Normal', 'TruncatedNormal'}:
                 x[0][...] = x[0] * self.scale[i] + self.loc[i]
                 x[1][...] = x[1] * self.scale[i]
-            elif self.head == 'MixTruncatedNormal':
+            elif self.head == 'MixTruncatedNormal' or self.head == 'MixTruncatedNormal2':
                 x[0][...] = x[0] * self.scale[i].unsqueeze(-1) + self.loc[i].unsqueeze(-1)
                 x[1][...] = x[1] * self.scale[i].unsqueeze(-1)
             elif self.head == 'logNormal' or self.head == 'CrossEntropy':
                 pass # no need to denormalize
             else:
-                raise ValueError('head not supported, should be "RMSE", "NB", "logNormal", "Normal", "TruncatedNormal" or "CrossEntropy"')
+                raise ValueError('head not supported, should be "RMSE", "NB", "logNormal", "Normal", "TruncatedNormal", '
+                                 '"CrossEntropy", "MixTruncatedNormal", or "MixTruncatedNormal2"')
         return x
 
 
@@ -166,6 +167,50 @@ class MixNormalHead(nn.Module):
         sigma = torch.stack(sigma, dim=-1)  # [bs x num_patch x output_len x n]
 
         return mu, sigma, k
+
+
+class MixNormalHead2(nn.Module):
+    def __init__(self, d_model, output_len, dropout=0, n_mixture=2, **kwargs):
+        super().__init__()
+        self.dropout = nn.Dropout(dropout)
+        self.mu_list = nn.ModuleList([nn.Linear(d_model+i*3, 1) for i in range(n_mixture)])
+        self.sigma_list = nn.ModuleList([nn.Linear(d_model+i*3, 1) for i in range(n_mixture)])
+        self.k = nn.ModuleList([nn.Linear(d_model+i*3, 1) for i in range(n_mixture-1)])
+        self.softplus = nn.Softplus()
+        self.sigmoid = nn.Sigmoid()
+        self.n_mixture = n_mixture
+        self.output_len = output_len
+
+    def forward(self, x):
+        # x: [bs x num_patch x d_model]
+        remaining_k = torch.ones(x.shape[0], x.shape[1], 1, dtype=x.dtype).to(x.device)
+        for i in range(self.n_mixture):
+            current_mu = self.mu_list[i](self.dropout(x)) # [bs x num_patch x 1]
+            current_sigma = self.softplus(self.sigma_list[i](self.dropout(x)))  # [bs x num_patch x 1]
+
+            if i < self.n_mixture - 1:
+                current_k = remaining_k * self.sigmoid(self.k[i](self.dropout(x)))  # [bs x num_patch x 1]
+                remaining_k = remaining_k - current_k
+            else:
+                current_k = remaining_k
+
+            if i == 0:
+                mu_list = current_mu
+                sigma_list = current_sigma
+                k_list = current_k
+            else:
+                mu_list = torch.cat((mu_list, current_mu), dim=-1)
+                sigma_list = torch.cat((sigma_list, current_sigma), dim=-1)
+                k_list = torch.cat((k_list, current_k), dim=-1)
+
+            if i < self.n_mixture - 1:
+                x = torch.cat((x, current_mu, current_sigma, current_k), dim=-1)
+
+        mu_list = mu_list.unsqueeze(-2)
+        sigma_list = sigma_list.unsqueeze(-2)
+        k_list = k_list.unsqueeze(-2)
+
+        return mu_list, sigma_list, k_list
 
 
 class HeadNegativeBinomial(nn.Module):
@@ -440,13 +485,16 @@ class MeanNormal:
 
 #%% aggregations
 head_dic = {'NB': HeadNegativeBinomial, 'logNormal': NormalHead, 'RMSE': RmseHead, 'CrossEntropy': CrossEntropyHead,
-            'TruncatedNormal': NormalHead, 'Normal': NormalHead, 'MixTruncatedNormal': MixNormalHead}
+            'TruncatedNormal': NormalHead, 'Normal': NormalHead, 'MixTruncatedNormal': MixNormalHead,
+            'MixTruncatedNormal2': MixNormalHead2}
 mean_dic = {'NB': MeanNB, 'logNormal': MeanlogNormal, 'RMSE': MeanRMSE, 'CrossEntropy': MeanCrossEntropy,
-            'TruncatedNormal': MeanTruncatedNormal, 'Normal': MeanNormal, 'MixTruncatedNormal': MeanMixTruncatedNormal}
+            'TruncatedNormal': MeanTruncatedNormal, 'Normal': MeanNormal,
+            'MixTruncatedNormal': MeanMixTruncatedNormal, 'MixTruncatedNormal2': MeanMixTruncatedNormal}
 sample_dic = {'NB': SampleNB, 'logNormal': SampleLogNormal, 'RMSE': SampleRMSE, 'CrossEntropy': SampleCrossEntropy,
-              'TruncatedNormal': SampleTruncatedNormal, 'Normal': SampleNormal, 'MixTruncatedNormal': SampleMixTruncatedNormal}
+              'TruncatedNormal': SampleTruncatedNormal, 'Normal': SampleNormal,
+              'MixTruncatedNormal': SampleMixTruncatedNormal, 'MixTruncatedNormal2': SampleMixTruncatedNormal}
 
-def get_loss(head, a=0, b=20000, weights=None, train_method=None, num_bins=None):
+def get_loss(head, a=0, b=20000, weights=None, train_method=None, num_bins=None, **kwargs):
     if head == 'RMSE':
         return rmse_loss
     elif head == 'NB':
@@ -464,6 +512,8 @@ def get_loss(head, a=0, b=20000, weights=None, train_method=None, num_bins=None)
         return normal_loss
     elif head == 'MixTruncatedNormal':
         return MixTruncatedNormal_loss
+    elif head == 'MixTruncatedNormal2':
+        return MixTruncatedNormal_loss
     else:
         raise ValueError('loss not supported')
 
@@ -471,7 +521,7 @@ def train_model(args, train_loader, val_loader, test_loader, model, device='cuda
     trian_start_time = time.time()
     model.to(device)
     optimizer = torch.optim.Adam(model.parameters())
-    criterion = get_loss(args.head_type, a=0, b=args.b, weights=args.bin_weights, num_bins=args.num_bins, train_method=args.train_method)
+    criterion = get_loss(args.head_type, a=0, **vars(args))
 
     run = wandb.init(project='ABTransformer', config=dict(args._get_kwargs()), reinit=True, mode=args.mode)
     now = (f'{datetime.datetime.now().month:02d}_{datetime.datetime.now().day:02d}_{datetime.datetime.now().hour:02d}'

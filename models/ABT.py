@@ -4,50 +4,52 @@ from .transformer import *
 
 
 class ABTransformer(nn.Module):
-    """
-    Output dimension:
-         [bs x target_len] for prediction
-         [bs x num_patch x patch_len] for pretrain
-    """
-
     def __init__(self, patch_len: int, num_patch: int, num_target_patch, num_embeds: tuple = (2, 159, 7, 217),
                  n_layers: int = 3, d_model=128, n_heads=16, d_ff: int = 256,
                  norm: str = 'LayerNorm', attn_dropout: float = 0., dropout: float = 0., act: str = "gelu",
                  pre_norm: bool = False, store_attn: bool = False,
                  pe: str = 'zeros', learn_pe: bool = True, head_dropout=0,
-                 attn_mask=None, x_loc=None, x_scale=None, **kwargs):
-        """
-        Parameters:
-            num_embeds: tuple of number of embeddings for station, weekday, or time_in_day
-            d_ff: dimension of the inner feed-forward layer
-            pe: type of positional encoding initialization, "zeros", "sincos", or None
-            learn_pe: whether to learn positional encoding
-            revin: whether to use reversible instance normalization
-            ABflow: whether to use AB flow model
-        """
+                 attn_mask=None, x_loc=None, x_scale=None, input_type='number', head_type='RMSE',
+                 input_emb_size=8, num_bins=None, bin_edges=None, top_p=0.9, b=20000, **kwargs):
         super().__init__()
-        self.patch_len = patch_len
-        self.num_patch = num_patch  # number of patches of input outflow
-        self.num_target_patch = num_target_patch
-        self.attn_mask = attn_mask
         self.x_loc = x_loc
         self.x_scale = x_scale
+        self.num_patch = num_patch
+        self.patch_len = patch_len
+        self.num_target_patch = num_target_patch
+        self.attn_mask = attn_mask
+        self.input_type = input_type
+        self.head_type = head_type
+        self.num_bins = num_bins
+        self.num_embeds = num_embeds
+        self.d_model = d_model
+        self.n_layers = n_layers
         self.flow_type_eb = nn.Parameter(torch.tensor([[0, 1]], dtype=torch.long), requires_grad=False)
+
+        # Standardization
+        self.standardization = Standardization(self.x_loc, self.x_scale, input_type, head_type)
 
         # Backbone
         self.backbone = MetroEncoder(num_patch=num_patch, patch_len=patch_len, num_target_patch=num_target_patch,
                                      num_embeds=(2,)+tuple(num_embeds), n_layers=n_layers, d_model=d_model,
                                      n_heads=n_heads, d_ff=d_ff, attn_dropout=attn_dropout,
                                      dropout=dropout, act=act, pre_norm=pre_norm, store_attn=store_attn,
-                                     norm=norm, pe=pe, learn_pe=learn_pe)
+                                     norm=norm, pe=pe, learn_pe=learn_pe,
+                                     num_bins=num_bins, input_emb_size=input_emb_size, input_type=input_type)
 
-        self.head = RmseHead(d_model, patch_len, head_dropout)
-        # Standardization
-        self.standardization = Standardization(self.x_loc, self.x_scale)
+        # The output head part
+        if self.head_type == 'CrossEntropy':
+            self.bin2num_map = torch.nn.Parameter(torch.tensor([bin2num(x, bin_edges) for x in range(num_bins)], dtype=torch.float32).squeeze())
+            self.bin_edges = torch.nn.Parameter(torch.from_numpy(bin_edges), requires_grad=False)
+        else:
+            self.bin2num_map = None
+            self.bin_edges = None
 
-        self.softplus = nn.Softplus()
+        self.head = head_dic[head_type](d_model, patch_len, head_dropout, num_bins=num_bins)
+        self.mean = mean_dic[head_type](bin2num_map=self.bin2num_map, bin_edges=self.bin_edges, return_type=self.input_type, b=b)
+        self.sample = sample_dic[head_type](bin_edges=self.bin_edges, top_p=top_p, return_type=self.input_type, b=b)
 
-    def forward(self, x):
+    def forward(self, x, method='param'):
         """
         x: tuple of flow tensor [bs x num_patch x 2*patch_len] and feature tensors of [bs x num_patch].
         """
@@ -63,12 +65,20 @@ class ABTransformer(nn.Module):
         z = self.standardization(z, stations, 'norm')
         z = self.backbone(z, features, attn_mask)  # z: [bs x 2*num_patch x d_model]
         z = self.head(z)
-        z = self.standardization(z, stations, 'denorm')  # z: [bs x 2*num_patch x patch_len]
-        z = self.softplus(z)
-        y =  torch.cat((z[:,:n_patch,:],z[:,-n_patch:,:]), dim=-1) # [bs x num_patch x patch_len*2]
-        return y
+        z = self.standardization(z, stations, 'denorm')  # z: [bs x 2*num_patch x patch_len x if any]
+        z =  tuple([torch.cat((z[i][:,:n_patch], z[i][:,-n_patch:]), dim=2) for i in range(len(z))]) # [bs x num_patch x patch_len*2 x if any]
 
-    def forecast(self, x):
+        if method=='param':
+            return z
+        elif method=='mean':
+            return self.mean(*z)
+        elif method=='sample':
+            return self.sample(*z)
+        else:
+            raise ValueError("method should be 'param', 'mean', or 'sample'.")
+
+
+    def forecast(self, x, method='mean'):
         """
         Auto-regressive forecasting.
         x: tuple of flow tensor [bs x num_patch x patch_len] and feature tensors of [bs x num_patch x 1].
@@ -82,22 +92,40 @@ class ABTransformer(nn.Module):
         with torch.no_grad():
             for i in range(n_target):
                 xx = [y] + [feature[:, :n_input+i] for feature in features]
-                y_new = self(xx)
+                y_new = self(xx, method=method)
                 y = torch.cat([y, y_new[:, -1:, :]], dim=1)
 
-        return y[:, -n_target:, :]
+        y = y[:, -n_target:, :]
+        if self.head_type == 'CrossEntropy' and self.input_type == 'bins':
+            y = self.bin2num_map[y]
+
+        return y
+
+    def forecast_samples(self, x, n=100):
+        """Autoregressive forecasting in the test phase, draw n samples
+        """
+        result = []
+        with torch.no_grad():
+            for i in range(n):
+                result.append(self.forecast(x=x, method='sample'))
+        return torch.stack(result, dim=0)
+
 
 class MetroEncoder(nn.Module):
     def __init__(self, num_patch, num_target_patch, patch_len, num_embeds, n_layers=3, d_model=128, n_heads=16,
                  d_ff=256, norm='BatchNorm', attn_dropout=0., dropout=0., act="gelu", store_attn=False,
-                 pre_norm=False, pe='zeros', learn_pe=True):
+                 pre_norm=False, pe='zeros', learn_pe=True, num_bins=None, input_emb_size=None, input_type='number'):
         super().__init__()
         self.num_patch = num_patch
         self.patch_len = patch_len
         self.d_model = d_model
 
         # Input encoding: projection of feature vectors onto a d-dim vector space
-        self.W_P = nn.Linear(patch_len, d_model)
+        if input_type == 'number':
+            self.W_P = nn.Linear(patch_len, d_model)
+        elif input_type == 'bins':
+            self.W_P = nn.Sequential(nn.Embedding(num_bins, input_emb_size), FlattenLastTwoDims(), nn.Dropout(dropout),
+                                     nn.Linear(input_emb_size, d_model))
 
         # Positional encoding
         self.W_pos = positional_encoding(pe, learn_pe, num_target_patch+num_patch-1, d_model)
